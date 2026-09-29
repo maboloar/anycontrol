@@ -1,0 +1,103 @@
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { RacingDemo } from './RacingDemo';
+import { SurvivalDemo } from './SurvivalDemo';
+import { useApp } from '../store';
+import { ZERO } from './GamepadView';
+import { Profiler } from 'react';
+const listeners = vi.hoisted(() => new Set<(type: string, data: Record<string, unknown>) => void>());
+vi.mock('../connection', () => ({ connection: { onMessage: (fn: (type: string, data: Record<string, unknown>) => void) => { listeners.add(fn); return () => listeners.delete(fn); } } }));
+const fillRect = vi.fn();
+const ctx = new Proxy({}, { get: (_t, key) => key === 'fillRect' ? fillRect : vi.fn(), set: () => true });
+let tick: FrameRequestCallback | undefined;
+let now = 0;
+beforeEach(() => {
+  now = 1000; tick = undefined; localStorage.clear(); fillRect.mockClear();
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  useApp.setState({ conn: 'closed' });
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([{}] as unknown as DOMRectList);
+  vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => { tick = fn; return 1; });
+  vi.stubGlobal('cancelAnimationFrame', () => { tick = undefined; });
+});
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+const frames = (n: number) => act(() => { for (let i = 0; i < n; i++) { now += 50; const next = tick; tick = undefined; next?.(now); } });
+it('racing supports keyboard play, pause, restart and a retained high score without a camera', () => {
+  render(<RacingDemo />);
+  fireEvent.click(screen.getByRole('button', { name: '주행 시작 / 계속' }));
+  const stage = screen.getByLabelText('레이싱 조작 영역');
+  fireEvent.keyDown(stage, { key: 'w' }); frames(60); fireEvent.keyUp(stage, { key: 'w' });
+  const best = Number(localStorage.getItem('anycontrol.race.best'));
+  expect(best).toBeGreaterThan(0);
+  fireEvent.keyDown(stage, { key: 'p' });
+  const finalBest = Number(localStorage.getItem('anycontrol.race.best'));
+  expect(screen.getByRole('status').textContent).toBe('준비 / 일시정지');
+  const score = screen.getByLabelText('레이싱 점수').textContent;
+  frames(60); expect(screen.getByLabelText('레이싱 점수').textContent).toBe(score);
+  fireEvent.click(screen.getByRole('button', { name: '처음부터' }));
+  expect(screen.getByLabelText('레이싱 점수').textContent).toContain('점수 0');
+  expect(Number(localStorage.getItem('anycontrol.race.best'))).toBe(finalBest);
+});
+it('survival runs, stops on emergency or loss of focus, and starts over', () => {
+  render(<SurvivalDemo />);
+  fireEvent.click(screen.getByRole('button', { name: '생존 시작 / 계속' })); frames(50);
+  expect(screen.getByLabelText('좀비 게임 점수').textContent).toContain('생존 2초');
+  act(() => window.dispatchEvent(new Event('anycontrol-stop')));
+  const score = screen.getByLabelText('좀비 게임 점수').textContent;
+  frames(50); expect(screen.getByLabelText('좀비 게임 점수').textContent).toBe(score);
+  fireEvent.click(screen.getByRole('button', { name: '처음부터' }));
+  expect(screen.getByLabelText('좀비 게임 점수').textContent).toContain('생존 0초');
+  fireEvent.blur(screen.getByLabelText('좀비 게임 조작 영역'), { relatedTarget: document.body });
+  expect(screen.getByRole('button', { name: '생존 시작 / 계속' })).toBeTruthy();
+});
+
+it.each([RacingDemo, SurvivalDemo])('does no animation work while idle, paused or minimized', Demo => {
+  render(<Demo />);
+  fillRect.mockClear(); frames(120);
+  expect(fillRect).not.toHaveBeenCalled(); expect(tick).toBeUndefined();
+  fireEvent.click(screen.getByRole('button', { name: /시작 \/ 계속/ })); frames(5);
+  expect(fillRect).toHaveBeenCalled();
+  vi.mocked(HTMLElement.prototype.getClientRects).mockReturnValue([] as unknown as DOMRectList);
+  frames(1); fillRect.mockClear(); frames(120);
+  expect(fillRect).not.toHaveBeenCalled(); expect(tick).toBeUndefined();
+});
+it('receives live controller frames without React renders and expires stale input', () => {
+  const renders = vi.fn();
+  useApp.setState({ conn: 'open' });
+  render(<Profiler id="race" onRender={renders}><RacingDemo /></Profiler>);
+  renders.mockClear();
+  const data = { controller: { ...ZERO, mode: 'send', axes: { ...ZERO.axes, rt: 1 } } };
+  act(() => { for (let i = 0; i < 60; i++) listeners.forEach(fn => fn('state', data)); });
+  expect(renders).not.toHaveBeenCalled();
+  now += 600;
+  fireEvent.click(screen.getByRole('button', { name: '주행 시작 / 계속' })); frames(20);
+  expect(screen.getByRole('status').textContent).toContain('0 km/h');
+  act(() => listeners.forEach(fn => fn('state', data))); frames(5);
+  expect(screen.getByRole('status').textContent).not.toContain('0 km/h');
+});
+it('throttles score persistence and flushes the final score on pause', () => {
+  const save = vi.spyOn(Storage.prototype, 'setItem');
+  render(<SurvivalDemo />);
+  fireEvent.click(screen.getByRole('button', { name: '생존 시작 / 계속' })); frames(100);
+  expect(save.mock.calls.filter(([key]) => key === 'anycontrol.survival.best').length).toBeLessThanOrEqual(5);
+  fireEvent.keyDown(screen.getByLabelText('좀비 게임 조작 영역'), { key: 'p' });
+  expect(Number(localStorage.getItem('anycontrol.survival.best'))).toBeGreaterThanOrEqual(25);
+});
+it('accepts the mapped space key for the survival pulse', () => {
+  useApp.setState({ conn: 'open' });
+  render(<SurvivalDemo />);
+  fireEvent.click(screen.getByRole('button', { name: '생존 시작 / 계속' }));
+  act(() => listeners.forEach(fn => fn('state', { controller: { ...ZERO, mode: 'send', keys: ['space'] } })));
+  frames(5);
+  expect(screen.getByRole('status').textContent).toMatch(/충격파 \d/);
+});
+it('defaults survival to position correspondence and offers joystick without replacing the game', () => {
+  render(<SurvivalDemo />);
+  const select = screen.getByLabelText('게임 조작 방식') as HTMLSelectElement;
+  expect(select.value).toBe('position');
+  expect(screen.getByLabelText('실시간 위치 컨트롤러')).toBeTruthy();
+  fireEvent.change(select, { target: { value: 'joystick' } });
+  expect(select.value).toBe('joystick');
+  expect(screen.queryByLabelText('실시간 위치 컨트롤러')).toBeNull();
+  expect(screen.getByRole('button', { name: '생존 시작 / 계속' })).toBeTruthy();
+});
