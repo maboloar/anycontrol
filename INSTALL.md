@@ -1,6 +1,6 @@
 # 설치 및 배포 / Installation and distribution
 
-사용자 설치·실행·종료·삭제·문제 해결: [한국어](README.md) · [English](README-en.md).
+사용자 설치·실행·종료·삭제·문제 해결
 
 개발 및 배포 파일 빌드: [DEVELOPMENT.md](DEVELOPMENT.md).
 
