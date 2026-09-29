@@ -2,9 +2,7 @@
 
 # AnyControl v1.0.0
 
-#### An entry in the 2026 Korea University × AWS AI INNOVATORS CHALLENGE
-
-**Team:** 아무거나 (Amugeona) · **Team member:** 김삼 (Kim Sam)
+#### 2026 Korea University × AWS AI INNOVATORS CHALLENGE
 
 *All you need is one camera. A cup on your desk, an ordinary pen, or even your bare hands can become a mouse, a keyboard, or a gamepad. AnyControl recognizes multiple objects at once, remembers them when they are occluded, and finds them again. All processing runs in real time, on-device, so it works without an internet connection.*
 
@@ -13,7 +11,7 @@ A local web app for macOS that tracks objects and hands through a camera and tur
 ## Download and install
 
 1. Download `AnyControl-v1.0.0-macOS.command` from [GitHub Releases](https://github.com/maboloar/anycontrol/releases). Also keep `AnyControl-Uninstall-v1.0.0-macOS.command` for removal. **The Source code archives are not installers for regular users.**
-2. Double-click the launcher `.command` file. Terminal opens and installation begins. The first installation may take several minutes, depending on your internet connection.
+2. Double-click the launcher `.command` file. **If macOS blocks it or reports that you do not have appropriate access privileges, follow [first-launch security and permissions](#first-launch-permissions) first.** Installation starts when Terminal opens. The first installation may take several minutes, depending on your internet connection.
 3. Allow camera access when prompted. AnyControl opens automatically in your browser when setup finishes.
 4. Follow the tutorial to select a camera and configure object or hand input. To control your Mac's actual mouse and keyboard, grant Accessibility permission and enable actual input in the app.
 
@@ -21,7 +19,7 @@ A local web app for macOS that tracks objects and hands through a camera and tur
 
 The default installation location is `~/Library/Application Support/AnyControl/`. Python, libraries, the app and logs are stored there. Saved mappings are kept in `profiles/`. The executable includes tracking models and the built web interface.
 
-If macOS security blocks the downloaded file, see **Troubleshooting** at the bottom.
+On first launch, a **security block followed by an execution permission error** may appear. Follow the two steps in [Troubleshooting: first launch](#first-launch-permissions) below.
 
 ## Requirements
 
@@ -80,14 +78,62 @@ Object tracking uses EfficientTAM. The optional hand engine uses MediaPipe, and 
 
 | Problem | Solution |
 |---|---|
-| macOS security blocks the `.command` file | Verify that it came from the official release, then allow it under **System Settings → Privacy & Security → Open Anyway**. The current distribution is not signed or notarized. |
-| Permission denied when launching | Type `chmod +x ` in Terminal, drag the executable into the window and press Enter. Then double-click it again. |
+| macOS security blocks the `.command` file | Follow [1. Allow the file through macOS security](#security-blocked). |
+| “You do not have appropriate access privileges” | Follow [2. Grant execution permission](#execution-permission), then double-click the file again. |
 | Installation fails or stops | Check internet access and at least 4GB of free space, then run the same file again. Logs are in `~/Library/Application Support/AnyControl/logs/`. |
 | The browser does not open automatically | Open the address printed in Terminal. The default is `http://127.0.0.1:8767`; another port is chosen if it is occupied. |
 | Camera missing or black image | Check macOS camera permission, close other apps using the camera, and refresh devices. For iPhone, check the Continuity Camera conditions above and USB trust settings. |
 | Actual mouse or keyboard input does not work | Under **System Settings → Privacy & Security → Accessibility**, grant permission to the executable identified by the app and enable actual input. Restart AnyControl if needed. |
 | Tracking jitters or loses the object | Improve lighting and keep the camera and object steady. Use an object that stands out from the background, then reselect or recalibrate. Similar objects and objects heavily covered by a hand may be difficult to track. |
 | Closing the tab does not quit the app | Check for other AnyControl tabs and wait briefly. If it keeps running, press `Ctrl+C` in its Terminal window. |
+
+<a id="first-launch-permissions"></a>
+
+### First launch: security blocks and execution permissions
+
+The first time you open a downloaded `.command`, the following errors may appear **one after the other**. Even after allowing the file through macOS security, installation cannot start if it lacks execution permission. **Follow the step matching the error you see.** You may need to handle the launcher and uninstaller separately.
+
+<a id="security-blocked"></a>
+
+#### 1. Allow the file through macOS security
+
+**Symptom:** macOS blocks the file because it cannot verify the developer or check it for malicious software. The current AnyControl distribution is not signed or notarized, so this warning may appear.
+
+1. Confirm that you downloaded it from the [official GitHub Releases](https://github.com/maboloar/anycontrol/releases).
+2. Double-click the `.command` in Finder, then dismiss the blocking message.
+3. Open **Apple menu () → System Settings → Privacy & Security**.
+4. Scroll down to **Security** and click **Open Anyway** beside the message about that file.
+5. Choose **Open** in the confirmation dialog. Authenticate with your Mac login password or Touch ID if prompted.
+
+If **Open Anyway** is missing, try opening the file again and check Settings immediately after the warning. A school- or company-managed Mac may restrict this through administrator policy. See [Apple's guide to opening apps](https://support.apple.com/en-us/102445) for details.
+
+If a different error now says that you **do not have appropriate access privileges**, continue with step 2 below.
+
+<a id="execution-permission"></a>
+
+#### 2. Grant execution permission
+
+**Symptom:** macOS says you do not have the access privileges needed to execute the file. If the downloaded file lacks execution permission, add it with `chmod`.
+
+1. Press `⌘ + Space`, search for **Terminal**, and open it.
+2. Type **`chmod u+x` followed by one space** in Terminal. Do not press Enter yet.
+3. **Drag the downloaded `.command` file from Finder into the Terminal window.** Its path is filled in automatically.
+4. Press Enter. Returning to the next prompt without an error is normal.
+5. Return to Finder and double-click the same `.command` again.
+
+If the file is in your **Downloads** folder, you can use this command directly. If its location or name differs, use the drag-and-drop method above.
+
+```bash
+chmod u+x "$HOME/Downloads/AnyControl-v1.0.0-macOS.command"
+```
+
+If the uninstaller shows the same error, apply it separately to that file:
+
+```bash
+chmod u+x "$HOME/Downloads/AnyControl-Uninstall-v1.0.0-macOS.command"
+```
+
+This command **adds execution permission for the current user to the specified file**. It does not install or run the app. If reopening the file triggers a security warning, also complete [step 1](#security-blocked). See Apple's [guide to making a file executable](https://support.apple.com/en-us/guide/terminal/apdd100908f-06b3-4e63-8a87-32e71241bab4/mac).
 
 If the libraries need repair, run this command from the directory containing the executable:
 
