@@ -1,0 +1,64 @@
+#!/bin/bash
+# AnyControl @VERSION@ — single-file macOS installer and launcher.
+set -euo pipefail
+fail() { echo; echo "AnyControl: $*" >&2; if [ -t 0 ]; then read -r -p 'Enter 키를 누르면 닫습니다. ' _ || true; fi; exit 1; }
+trap 'fail "준비 중 오류가 발생했습니다. 인터넷 연결과 남은 디스크 공간을 확인하고 다시 실행하세요."' ERR
+[ "$(uname -s)" = Darwin ] || fail '이 실행파일은 macOS용입니다.'
+[ "$(uname -m)" = arm64 ] || fail 'Apple Silicon(M1 이상) Mac이 필요합니다. Intel/Rosetta 환경은 지원하지 않습니다.'
+os_major=$(sw_vers -productVersion | cut -d. -f1)
+[ "$os_major" -ge 14 ] || fail '현재 추적 모델은 macOS 14 이상이 필요합니다. macOS를 업데이트한 뒤 실행하세요.'
+base="${ANYCONTROL_INSTALL_DIR:-$HOME/Library/Application Support/AnyControl}"
+release="$base/releases/@BUNDLE_ID@"
+mkdir -p "$base/releases" "$base/logs"
+launch_log="$base/logs/launch-$(date +%Y%m%d-%H%M%S)-$$.log"
+exec > >(tee -a "$launch_log") 2>&1
+work=$(mktemp -d "$base/.prepare.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+echo 'AnyControl v@VERSION@ · 실행 환경을 확인합니다.'
+# The payload starts at a byte offset so binary content never enters the shell parser.
+tail -c +@PAYLOAD_START@ "$0" > "$work/app.tar.gz"
+actual=$(shasum -a 256 "$work/app.tar.gz" | cut -d' ' -f1)
+[ "$actual" = '@PAYLOAD_SHA@' ] || fail '실행파일이 손상되었습니다. 정상 파일을 다시 받아 주세요.'
+if [ "${1:-}" = '--extract-only' ]; then
+  [ "$#" -eq 2 ] || fail '사용법: --extract-only 대상폴더'
+  mkdir -p "$2"; tar -xzf "$work/app.tar.gz" -C "$2"
+  echo "파일 검사·추출 완료: $2"; exit 0
+fi
+# Stage fully before publishing a release; interrupted extraction is retried next run.
+mkdir -p "$work/app"
+tar -xzf "$work/app.tar.gz" -C "$work/app"
+# The Python installer publishes/repairs files under a process lock.
+export UV_PYTHON_INSTALL_DIR="$base/python"
+export UV_CACHE_DIR="$base/cache/uv"
+export UV_NO_CONFIG=1
+export UV_SYSTEM_CERTS=1
+unset PYTHONHOME PYTHONPATH VIRTUAL_ENV
+export UV_PYTHON_INSTALL_BIN=0
+export PYTHONNOUSERSITE=1
+export PYTHONDONTWRITEBYTECODE=1
+uv="$work/app/packaging/uv"
+[ -x "$uv" ] || uv="$release/packaging/uv"
+# Replacing cached app files must never depend on the damaged cached launcher.
+if ! "$uv" python find --managed-python 3.13.13 >/dev/null 2>&1; then
+  available_kb=$(df -Pk "$base" | awk 'NR==2 {print $4}')
+  [ "$available_kb" -ge 4194304 ] || fail '초기 설치에는 여유 공간 4GB 이상이 필요합니다.'
+  echo 'Python 3.13.13이 없어 전용 폴더에 자동 설치합니다. 첫 설치에는 인터넷이 필요합니다.'
+  "$uv" python install 3.13.13 --no-bin
+fi
+python_path=$("$uv" python find --managed-python 3.13.13)
+if ! "$python_path" -c 'import sys, ssl, venv, hashlib, json; assert sys.version_info[:3] == (3,13,13)' >/dev/null 2>&1; then
+  echo 'Python 실행 환경이 손상되어 자동 복구합니다.'
+  "$uv" python install 3.13.13 --reinstall --no-bin
+  python_path=$("$uv" python find --managed-python 3.13.13)
+fi
+# Always use the verified freshly extracted setup code, including for repair.
+setup_root="$work/app"
+[ -f "$setup_root/packaging/bootstrap.py" ] || setup_root="$release"
+if "$python_path" "$setup_root/packaging/bootstrap.py" --install-dir "$base" --release "$release" --uv "$uv" "$@"; then
+  status=0
+else
+  status=$?
+fi
+if [ "$status" -eq 130 ]; then echo "AnyControl을 종료했습니다."; exit 0; fi
+if [ "$status" -ne 0 ]; then fail "실행을 마치지 못했습니다(코드 $status). 위 안내와 $base/logs 로그를 확인하세요."; fi
+exit 0

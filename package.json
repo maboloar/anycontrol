@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 server.py",
+    "build": "npm --prefix frontend run build",
+    "dev": "npm --prefix frontend run dev",
+    "test": "npm --prefix frontend test"
+  },
+  "version": "1.0.0"
+}
