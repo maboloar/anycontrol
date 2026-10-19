@@ -32,6 +32,6 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('없음', reason)
 
     def test_unavailable_existing_server_is_not_reused(self):
-        self.assertFalse(bootstrap.existing_server(0, '1.0.0'))
+        self.assertFalse(bootstrap.existing_server(0, '1.8.0'))
 
 if __name__ == '__main__': unittest.main()

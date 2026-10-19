@@ -39,6 +39,8 @@ def make_hand(cx: float, cy: float, size: float, pinch: float = 1.0, pinch_middl
         thumb_tip = mid_tip + np.array([pinch_middle * s, 0.0])
     else:
         thumb_tip = idx_tip + np.array([-pinch * s, 0.0])
+    if scroll_pose and pinch >= .8 and pinch_middle >= .8:
+        thumb_tip = np.array([cx - .15 * s, cy + .1 * s])
     P[1] = wrist + [-0.3 * s, -0.2 * s]
     P[2] = wrist + [-0.5 * s, -0.45 * s]
     P[3] = (P[2] + thumb_tip) / 2

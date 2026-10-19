@@ -28,8 +28,11 @@ import numpy as np
 
 from .tracking.api import Pose, TrackOutput
 from .tracking.desk import DeskCalibration
-from .tracking.smooth import OneEuro
+from .tracking.smooth import OneEuro, SpikeEma
 from .pen_contact import OverheadContact
+from .depth_model import DepthRoll, DepthService, fit_depth_plane, INPUT_SIZE as DEPTH_SIZE
+from .pen_floor import FloorConfig, FloorContact, FloorDecision
+from .pen_skeleton import PenSkeleton, Skeleton
 
 
 def line_prompts(tip: tuple[float, float], tail: tuple[float, float], n: int = 5) -> list[tuple[float, float, int]]:
@@ -99,7 +102,13 @@ def measure_tip(mask: np.ndarray, gray: np.ndarray | None, prev_tip: np.ndarray 
 def tip_geometry(mask: np.ndarray, prev_tip: np.ndarray | None, prev_axis: np.ndarray | None
                  ) -> tuple[np.ndarray, np.ndarray, float, float] | None:
     """마스크의 펜촉 (tip0, 몸통→펜촉 단위벡터 u, 펜촉 근처 굵기, 보이는 길이). 길쭉하지 않으면 None."""
-    ys, xs = np.nonzero(mask)
+    # 전체 프레임 nonzero 는 느리다: 마스크가 있는 행·열 범위로 자른 뒤 찾는다 (결과는 같다).
+    rows = np.flatnonzero(mask.any(1))
+    if rows.size == 0:
+        return None
+    cols = np.flatnonzero(mask[rows[0]:rows[-1] + 1].any(0))
+    ys, xs = np.nonzero(mask[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1])
+    ys, xs = ys + rows[0], xs + cols[0]
     if xs.size < 20:
         return None
     P = np.stack([xs, ys], 1).astype(np.float64)
@@ -347,6 +356,37 @@ class PenConfig:
     desk_contact_margin: float = .18
     shadow_assist: bool = False
     desk_near_on: float = .70
+    # 수평 카메라 접촉 판정 방식. legacy = 위 SurfaceModel + touch_on/off.
+    # floor = pen_floor (RANSAC 바닥 기하 + σ 문턱 + 상태기계). 아래 floor_* 는 floor 에서만 쓴다.
+    contact_method: str = "floor"
+    floor_shadow: bool = True        # 그림자 링 단서 (직사광일 때만 자동으로 켜짐)
+    floor_memory: bool = True        # 분할 탈락 동안 접촉 유지 (객체 영속성)
+    # edge: 책상 먼 모서리 추적 (카메라 기울어짐 보정) | off. 기본 off: IMG_0002 에서 피부·팔이 책상색과 비슷해
+    # 모서리 직선이 고정 카메라인데도 약 56px 흔들려 F1 이 0.785 → 0.645 로 떨어졌다 (pen_test 이득은 +0.002).
+    floor_drift: str = "off"
+    floor_backfill: bool = True      # 진입 지연만큼 획 앞부분 소급, 이탈 판정 중 찍힌 끝부분 제거
+    floor_min_frames: int = 1        # 진입·이탈 디바운스 최소 프레임 (시간 기준 33ms 와 함께. 60fps 면 2프레임)
+    floor_min_samples: int = 40      # 바닥 모델 첫 적합 표본 수
+    floor_roll: bool = True          # 바닥 평면에 카메라 롤(좌우 기울기) 항을 더한다 (pen_floor.FloorModel)
+    # 깊이 모델(Depth Anything V2 Small)로 잰 카메라 롤을 바닥 평면의 좌우 기울기로 쓴다. 가중치가 설치돼 있을 때만 작동하고,
+    # 없거나 아직 못 쟀으면 터치로 배운 롤(floor_roll)을 쓴다. 끄면 항상 터치로 배운 롤.
+    floor_depth_roll: bool = True
+    # 떠 있는 펜촉은 펜이 책상에 닿을 자리(같은 굵기에서 닿았을 때의 y)에 그린다. 그러지 않으면 펜을 내리거나 올릴 때 펜촉의 y 변화가
+    # 책상 앞뒤 이동으로 바뀌어 획 처음·끝에 세로로 삐치는 선이 생긴다 (소실선 근처에서는 몇 px 가 크게 증폭된다).
+    # 획 처음·끝의 삐침 방지: 닿는 순간과 떼는 순간에는 펜촉이 세로로 움직이는데(내려앉고 들어 올림) 그 점들은 그리지 않는다.
+    #  - stroke_start_delay_s: 접촉 근거가 처음 나온 시각부터 이 시간 동안의 점은 건너뛴다 (펜이 책상에 안착한 뒤부터 그린다)
+    #  - stroke_end_trim_s: 이탈 근거가 처음 나온 시각 직전 이 시간의 점을 뺀다 (들어 올리는 중의 점)
+    #  - stroke_hover_gate: 접촉 중이어도 펜촉이 이 높이(펜 굵기 배) 이상 떠 있으면 점을 찍지 않는다
+    stroke_start_delay_s: float = 0.07
+    stroke_end_trim_s: float = 0.07
+    stroke_hover_gate: float = 0.35
+    draw_project: bool = True
+    draw_project_dead: float = 0.2    # 이만큼(펜 굵기 배) 이하의 높이는 보정하지 않는다 (닿아 있을 때의 평면 오차)
+    draw_project_max: float = 3.0     # 보정 상한 (펜 굵기 배)
+    floor_width_pct: float = 100     # 굵기 분위수 (100 = 최대 내접원). 낮추면 손가락이 붙은 곳의 과대 측정을 줄인다
+    floor_shadow_release: bool = False  # 그림자 gap(+상승)으로 접촉 종료 허용. 끄면 gap 은 진입 거부만 (pen_test 에서 더 좋음)
+    precise_width: bool = False      # 몸통 윤곽 서브픽셀 굵기 (실험)
+    floor_horizon: bool = False      # 바닥 모델로 그리기 소실선 추정 (실험, 검증 안 됨)
 
 
 class PenTracker:
@@ -363,6 +403,17 @@ class PenTracker:
         self.contact = False
         c = self.cfg
         self.fx, self.fy = OneEuro(c.tip_min_cutoff, c.tip_beta), OneEuro(c.tip_min_cutoff, c.tip_beta)
+        self.skel = PenSkeleton()                         # 펜은 곧은 막대: 가려진 가운데·끝을 채운 뼈대
+        self.skeleton: Skeleton | None = None
+        self.occluder: np.ndarray | None = None           # 손 등 가리는 물체 마스크 (손 가림 처리를 켰을 때)
+        self._anchor_tail: np.ndarray | None = None
+        self._hover_px = 0.0
+        self._stroke_t0 = 0.0         # 이 시각 전의 점은 이번 획에 넣지 않는다 (시작 지연)
+        self._sk_len0: float | None = None               # 뼈대 길이 / (배율·√가로세로비) — 보이는 양 끝 사이로 잰 값
+        self.depth_service: DepthService | None = None   # VisionProcessor 가 공유 서비스를 넣는다
+        self.depth_roll = DepthRoll()
+        self.ema = True                 # 펜촉 좌표에 실시간 EMA(튐 억제). VisionProcessor 가 켜고 끈다
+        self.ema_x, self.ema_y = SpikeEma(tau=0.04), SpikeEma(tau=0.04)
         self.strokes: list[list[tuple[float, float]]] = []
         self.cur: list[tuple[float, float]] | None = None
         self.events: list[dict[str, Any]] = []
@@ -391,6 +442,50 @@ class PenTracker:
         self.uncertain = False
         self.suspended = False  # 안내 보정 중 기하만 관측하고 획·접촉 모델은 변경하지 않는다.
         self._uncertain_since: float | None = None
+        # floor 접촉 (contact_method="floor")
+        self._floor: FloorContact | None = None
+        self.floor_dec: FloorDecision | None = None
+        self._recent: deque = deque(maxlen=90)     # (t, 그리기 좌표): 획 앞부분 소급용
+        self.cur_t: list[float] = []               # self.cur 각 점의 시각
+        self.last_stroke_span: tuple[float, float] | None = None
+        self._t_now = 0.0
+        self._d_last: float | None = None
+        self.floor_probe: tuple[float, float, float] | None = None   # 안내 보정 중 (w, d, x)
+
+    # ---------------------------------------------------------------- floor 접촉
+    @property
+    def floor_mode(self) -> bool:
+        return self.cfg.contact_method == "floor" and not self.overhead
+
+    @property
+    def floor(self) -> FloorContact:
+        """설정이 실행 중에 바뀔 수 있어 처음 쓸 때 만든다."""
+        c = self.cfg
+        key = (c.floor_shadow, c.floor_memory, c.floor_drift, c.precise_width, c.floor_min_frames,
+               c.floor_min_samples, c.floor_shadow_release, c.floor_width_pct, c.floor_roll)
+        if self._floor is None or getattr(self, "_floor_key", None) != key:
+            self._floor = FloorContact(FloorConfig(use_shadow=c.floor_shadow, use_memory=c.floor_memory,
+                                                   drift=c.floor_drift, precise_width=c.precise_width,
+                                                   min_frames=c.floor_min_frames, min_samples=c.floor_min_samples,
+                                                   shadow_release=c.floor_shadow_release,
+                                                   width_pct=c.floor_width_pct, roll=c.floor_roll))
+            self._floor_key = key
+        return self._floor
+
+    @property
+    def pressed(self) -> bool:
+        """입력으로 내보낼 접촉. 분할 탈락으로 접촉을 유지(hold)하는 동안은 펜촉이 불확실해도 누른 채로 둔다."""
+        if not self.contact:
+            return False
+        if not self.uncertain:
+            return True
+        return bool(self.floor_mode and self.floor_dec is not None and self.floor_dec.holding)
+
+    def _floor_dropout(self, t: float) -> None:
+        dec = self.floor.dropout(t)
+        self.floor_dec = dec
+        if not dec.contact:
+            self.lift()
 
 
     def redefine(self, tip0: tuple[float, float], tail0: tuple[float, float]) -> None:
@@ -404,15 +499,18 @@ class PenTracker:
         c = self.cfg
         self.fx, self.fy = OneEuro(c.tip_min_cutoff, c.tip_beta), OneEuro(c.tip_min_cutoff, c.tip_beta)
         self.y_hist.clear()
+        self.ema_x.reset()
+        self.ema_y.reset()
         self.t_prev = None
         self.desk_near_s = None
-    def _rigid_tip(self, pose: Pose | None) -> np.ndarray | None:
-        if pose is None or self._anchor_tip is None or self._anchor_pose is None:
+    def _rigid_map(self, pose: Pose | None, anchor_pt: np.ndarray | None) -> np.ndarray | None:
+        """등록 때 본 펜 위의 한 점(anchor_pt)이 지금 포즈에서 있을 곳 (강체 예측)."""
+        if pose is None or anchor_pt is None or self._anchor_pose is None:
             return None
         anchor = self._anchor_pose
         a = math.radians(pose.angle - anchor.angle)
         c, s = math.cos(a), math.sin(a)
-        relative = self._anchor_tip - np.array([anchor.cx, anchor.cy])
+        relative = anchor_pt - np.array([anchor.cx, anchor.cy])
         ratio = pose.scale / max(anchor.scale, 1e-5)
         if self._anchor_axis is not None:
             # 3D 막대를 기울이면 2D 투영 길이가 바뀐다. 면적 배율만으로 길이를 고정하면 안 된다.
@@ -422,17 +520,61 @@ class PenTracker:
         return np.array([pose.cx, pose.cy]) + ratio * np.array(
             [c * relative[0] - s * relative[1], s * relative[0] + c * relative[1]])
 
+    def _rigid_tip(self, pose: Pose | None) -> np.ndarray | None:
+        return self._rigid_map(pose, self._anchor_tip)
+
+    def _rigid_tail(self, pose: Pose | None) -> np.ndarray | None:
+        return self._rigid_map(pose, self._anchor_tail)
+
     def _pause_measurement(self, prediction: np.ndarray | None, t: float) -> None:
         self.uncertain = True
         self.desk_near_s = None
         self.tip = prediction
         if self._uncertain_since is None:
             self._uncertain_since = t
+        elif t - self._uncertain_since > 0.3:   # 오래 가려졌다 나타나면 다른 곳일 수 있으니 EMA 를 새로 시작
+            self.ema_x.reset()
+            self.ema_y.reset()
+        if self.floor_mode and not self.suspended and self.manual_contact is None:
+            # floor: 상태기계가 유지 시간·재등장 위치로 끝낼지 정한다 (객체 영속성)
+            self._floor_dropout(t)
+            return
         # 짧은 가림에서는 점을 추가하지 않고 기존 획만 유지한다. 입력은 pipeline에서 차단한다.
         if t - self._uncertain_since > .10:
             self.lift()
 
+    def _depth_roll_tick(self, frame_bgr: np.ndarray, pen_mask: np.ndarray | None, t: float) -> None:
+        """깊이 모델로 카메라 롤을 가끔(2초마다) 재고, 믿을 만하면 바닥 평면의 좌우 기울기 a 로 고정한다.
+        추론은 백그라운드 스레드에서 한다. 모델이 없거나 끄면 터치로 배운 롤(a 자유)로 돌아간다."""
+        fm = self.floor.floor
+        svc = self.depth_service
+        if not self.cfg.floor_depth_roll or svc is None or not svc.available:
+            if fm.a_fixed is not None:
+                fm.a_fixed = None
+                fm.fit()
+            if not self.cfg.floor_depth_roll:
+                self.depth_roll.reset()
+            return
+        if self.depth_roll.due(t) and not svc.busy:
+            region = self.floor.floor_region(frame_bgr, pen_mask, DEPTH_SIZE)
+            if region is not None and int(region.sum()) >= 200:
+                H, W = frame_bgr.shape[:2]
+                est = self.depth_roll
+
+                def job(depth: np.ndarray) -> None:
+                    est.add(fit_depth_plane(depth, region), (W, H))
+
+                if svc.submit(frame_bgr, job):
+                    est.last_t = t
+        a = self.depth_roll.a_px(self.frame_w)
+        if a is not None and (fm.a_fixed is None or abs(fm.a_fixed - a) > 0.004 * self.frame_w):
+            fm.a_fixed = a
+            fm.fit()
+
     def lift(self) -> None:
+        if self._floor is not None and self._floor.state:
+            self._floor.state = False
+            self._floor.reset_lost()
         if self.contact:
             self.contact = False
             self._end_stroke()
@@ -444,10 +586,17 @@ class PenTracker:
         if self.manual_until is not None and t >= self.manual_until:
             self.manual_contact, self.manual_until = False, None
         self.frame_h, self.frame_w = frame_bgr.shape[:2]
+        self._t_now = t
         if not out.state.visible or out.mask is None:
             self.desk_near_s = None
-            self.lift()
+            if self.floor_mode and not self.suspended and self.manual_contact is None:
+                self._floor_dropout(t)
+            else:
+                self.lift()
             self.tip = None
+            self.skeleton = None
+            self.ema_x.reset()
+            self.ema_y.reset()
             self.uncertain = True
             self._uncertain_since = None
             return
@@ -470,33 +619,66 @@ class PenTracker:
             m = measure_tip(out.mask, gray, None, expected, None, self.cfg.edge_span)
             src = "t0"
         if m is None:
+            self.skeleton = None
             self._pause_measurement(self._rigid_tip(out.pose), t)
             self.debug = {"src": "rigid", "uncertain": True}
             return
+        mask_now = out.mask
+        if src == "t1":
+            mask_now = cv2.warpAffine(ref.mask.astype(np.uint8), ref.M, gray.shape[::-1], flags=cv2.INTER_NEAREST) > 0
         prediction = self._rigid_tip(out.pose)
+        expected_length = None
         if self._length0 is not None and out.pose is not None:
             expected_length = self._length0 * out.pose.scale * math.sqrt(max(.1, out.pose.aspect))
+        # 뼈대: 곧은 막대로 다시 맞춰 가려진 가운데·끝을 채운다. 기억한 끝 색으로 방향이 뒤집혔는지도 본다.
+        unit_len = None if out.pose is None else out.pose.scale * math.sqrt(max(.1, out.pose.aspect))
+        sk_len = None if self._sk_len0 is None or unit_len is None else self._sk_len0 * unit_len
+        sk = self.skel.observe(mask_now, expected, sk_len, prediction, self._rigid_tail(out.pose), self.occluder, frame_bgr)
+        wpx = m.width if math.isfinite(m.width) else 8.0
+        if sk is not None and self.skel.should_flip(frame_bgr, mask_now, sk, wpx):
+            expected = -expected      # 다시 나타난 펜이 뒤집혀 잡혔다 (끝 색이 기억과 반대)
+            m2 = measure_tip(ref.mask if src == "t1" else out.mask, gray, None, expected,
+                             ref.M if src == "t1" else None, self.cfg.edge_span)
+            sk2 = self.skel.observe(mask_now, expected, sk_len, prediction, self._rigid_tail(out.pose), self.occluder, frame_bgr)
+            if m2 is not None and sk2 is not None:
+                m, sk = m2, sk2
+        self.skeleton = sk
+        if expected_length is not None:
             shortened = m.length < 0.6 * expected_length
             displaced = prediction is not None and np.linalg.norm(m.tip - prediction) > 0.28 * expected_length
+            # 가리는 물체(손)가 보이는 끝 바로 너머를 덮고 있으면, 보이는 끝은 진짜 펜촉이 아니다 (src 와 무관).
+            hand_hides_tip = sk is not None and sk.tip_hidden and sk.evidence == "occluder"
             # 신선한 Tier 1 마스크는 면외 회전까지 모델이 본 관측이다. 강체 예측으로 덮어쓰지 않는다.
             # 초기/오래된 마스크에서 전파한 Tier 0 결과에만 보수적인 길이 제약을 적용한다.
-            if src == "t0" and shortened and displaced:
-                self._pause_measurement(prediction, t)
+            if hand_hides_tip or (src == "t0" and shortened and displaced):
+                # 뼈대가 보이는 선 위에서 기억한 길이로 채운 펜촉이 포즈만으로 예측한 것보다 믿을 만하다
+                est = sk.tip if sk is not None and sk.tip_hidden else prediction
+                self._pause_measurement(est, t)
                 self.axis = expected
                 self.height = None
-                self.debug = {"src": "rigid", "uncertain": True,
+                self.debug = {"src": "skeleton" if sk is not None and sk.tip_hidden else "rigid", "uncertain": True,
                               "observed_length": round(m.length, 1), "expected_length": round(expected_length, 1)}
                 return
         if self._anchor_tip is None and out.pose is not None:
             self._anchor_tip = m.tip.copy()
             self._anchor_axis = m.axis.copy()
+            self._anchor_tail = (sk.tail.copy() if sk is not None and sk.state == "seen" else m.tip - m.axis * m.length)
             self._anchor_pose = Pose(out.pose.cx, out.pose.cy, out.pose.scale, out.pose.angle, out.pose.aspect)
             self._length0 = m.length / max(out.pose.scale * math.sqrt(max(.1, out.pose.aspect)), 1e-5)
+            if sk is not None:
+                self.skel.learn_ends(frame_bgr, mask_now, sk, wpx)
+                if sk.state == "seen" and unit_len:
+                    self._sk_len0 = sk.length / unit_len
         self.uncertain = False
         self._uncertain_since = None
         unit = max(m.width if math.isfinite(m.width) else 8.0, 4.0)
         sx = self.fx(float(m.tip[0]), t, unit)
         sy = self.fy(float(m.tip[1]), t, unit)
+        if self.ema:   # 한두 프레임 확 튀는 펜촉 좌표가 그리기·커서에 그대로 나가지 않게 (펜 굵기를 값의 단위로)
+            sx, sy = self.ema_x(sx, t, 0.3 * unit), self.ema_y(sy, t, 0.3 * unit)
+        else:
+            self.ema_x.reset()
+            self.ema_y.reset()
         self.tip = np.array([sx, sy])
         self.axis = m.axis
         w = m.width
@@ -510,11 +692,22 @@ class PenTracker:
             if self._fit_every % self.cfg.refit_every == 0:
                 self.surface.fit()
         self.y_hist.append(float(m.tip[1]))
+        self.floor_probe = None
+        if self.floor_mode and self.suspended:
+            # 안내 보정 중에는 접촉 판정·획은 멈추고, 보정 표본(굵기·위치)만 잰다
+            pen_probe = mask_now
+            self.floor_probe = self.floor.probe(frame_bgr, gray, pen_probe, m.tip, m.axis)
+        if self.floor_mode and not self.suspended:
+            pen_now = mask_now
+            self.floor_dec = self.floor.process(frame_bgr, gray, pen_now, m.tip, m.axis, t)
+            self._d_last = self.floor.info.get("d")
+            self._depth_roll_tick(frame_bgr, pen_now, t)
+        xy = self._drawing_point()
+        if xy is not None:
+            self._recent.append((t, xy, (self.hover_px() / float(self._floor.info.get('w') or 1.0)) if (self.floor_mode and self._floor is not None) else 0.0))
         self.desk_near_s = None if not self.cfg.shadow_assist or self.overhead else self.desk_near_s
         if self.cfg.shadow_assist and not self.overhead:
-            pen_now = out.mask
-            if src == "t1":
-                pen_now = cv2.warpAffine(ref.mask.astype(np.uint8), ref.M, gray.shape[::-1], flags=cv2.INTER_NEAREST) > 0
+            pen_now = mask_now
             shadow = shadow_features(gray, m.tip, m.axis, self.width, pen_now, bgr=frame_bgr)
             # 유효하지 않은 관측의 이전 값을 재사용하지 않는다.
             if shadow is None:
@@ -544,25 +737,59 @@ class PenTracker:
             permitted = score is not None and score > (-.05 if was else c.desk_contact_margin)
             self._desk_press_frames = self._desk_press_frames + 1 if permitted else 0
             now = permitted and (was or self._desk_press_frames >= 2)
+        elif self.floor_mode:
+            now = bool(self.floor_dec is not None and self.floor_dec.contact)
         elif h is None:
             now = False
         else:
             now = h < (c.touch_off if was else c.touch_on) * w
-        self.shadow_veto = bool(now and not was and not self.overhead and c.shadow_assist
+        floor_auto = self.floor_mode and self.manual_contact is None
+        self.shadow_veto = bool(now and not was and not self.overhead and c.shadow_assist and not floor_auto
                                 and self.manual_contact is None and self.desk_near_s is not None
                                 and self.desk_near_s < c.desk_near_on)
         if self.shadow_veto:
             now = False
         if now and not was:
-            self.cur = []
+            self.cur, self.cur_t = [], []
             self.events.append({"type": "down"})
+            onset = self.floor_dec.onset_t if floor_auto and self.floor_dec is not None else None
+            backfill = c.floor_backfill and onset is not None
+            # 근거가 처음 나온 시각(소급)부터 시작 지연만큼 지난 뒤의 점부터 획에 넣는다
+            self._stroke_t0 = (onset if backfill else t) + (c.stroke_start_delay_s if floor_auto else 0.0)
+            if backfill:
+                # 진입 근거가 처음 나온 시각부터의 점을 소급한다 (디바운스 지연만큼 잃던 획 앞부분)
+                for tp, p, hv in self._recent:
+                    if onset - 1e-6 <= tp < t and tp >= self._stroke_t0 and hv <= c.stroke_hover_gate:
+                        self._append_point(p, tp)
         if now:
             xy = self.drawing_point()
-            if xy is not None and self.cur is not None:
-                self.cur.append((round(xy[0], 5), round(xy[1], 6)))
+            if xy is not None and self.cur is not None and t >= self._stroke_t0 and not self._hovering(floor_auto):
+                self._append_point(xy, t, mirrored=True)
         if was and not now:
+            off = self.floor_dec.offset_t if floor_auto and self.floor_dec is not None else None
+            if floor_auto and self.cur:
+                # 이탈 판정이 확정되기 전(들어 올리는 중)에 찍힌 점은 획에서 뺀다. 들어 올리기 시작한 직전의 점도 trim 만큼 뺀다.
+                cut = (off if (c.floor_backfill and off is not None) else t) - c.stroke_end_trim_s
+                keep = [i for i, tp in enumerate(self.cur_t) if tp < cut - 1e-6]
+                self.cur = [self.cur[i] for i in keep]
+                self.cur_t = [self.cur_t[i] for i in keep]
             self._end_stroke()
         self.contact = now
+
+    def _hovering(self, floor_auto: bool) -> bool:
+        """접촉으로 판정됐어도 펜촉이 많이 떠 있으면(디바운스로 접촉이 유지되는 동안 들어 올리는 중) 점을 찍지 않는다."""
+        if not floor_auto or self._floor is None:
+            return False
+        w = float(self._floor.info.get("w") or 0.0)
+        return w > 0 and self.hover_px() > self.cfg.stroke_hover_gate * w
+
+    def _append_point(self, xy: tuple[float, float], t: float, mirrored: bool = False) -> None:
+        if self.cur is None:
+            return
+        if not mirrored and self.mirror:
+            xy = (-xy[0], xy[1])
+        self.cur.append((round(xy[0], 5), round(xy[1], 6)))
+        self.cur_t.append(t)
 
     def _end_stroke(self) -> None:
         stroke = None
@@ -570,12 +797,15 @@ class PenTracker:
             stroke = self.cur
             self.strokes.append(stroke)
             del self.strokes[:-50]
+            self.last_stroke_span = (self.cur_t[0], self.cur_t[-1]) if len(self.cur_t) == len(self.cur) else None
         self.cur = None
+        self.cur_t = []
         self.events.append({"type": "up", "stroke": stroke})
 
     def clear(self) -> None:
         self.strokes.clear()
         self.cur = [] if self.contact else None
+        self.cur_t = []
         self.events.append({"type": "clear"})
 
     def mark_touching(self) -> bool:
@@ -584,6 +814,8 @@ class PenTracker:
             return False
         if self.overhead:
             return not self.uncertain and self.overhead_contact.mark(True)
+        if self.floor_mode and self._d_last is not None and self.floor.last_w:
+            self.floor.mark_touching(float(self.floor.last_w), float(self._d_last), float(self.floor.last_xn))
         self.touch_samples.append((self.width, float(self.y_hist[-1])))
         return self.surface.calibrate(self.touch_samples)
 
@@ -603,22 +835,127 @@ class PenTracker:
         self.manual_contact = self.manual_until = None
         self._desk_press_frames = 0
         self.lift()
+        self._floor = None
+        self.floor_dec = None
 
     def drawing_point(self) -> tuple[float, float] | None:
         xy = self._drawing_point()
         return (-xy[0], xy[1]) if xy is not None and self.mirror else xy
 
+    def hover_px(self) -> float:
+        """바닥 모델이 보는 펜촉 높이 (px, 양수 = 떠 있음, 책상에 닿을 자리의 y 와 펜촉 y 의 차).
+        바닥 모델의 굵기(최대 내접원)와 높이(펜 지름 단위)를 그대로 쓴다. 굵기가 불안정해 높이를 못 잰 프레임은 직전 값을 유지한다."""
+        if not self.floor_mode or self._floor is None or not self._floor.floor.ready:
+            return 0.0
+        info = self._floor.info
+        w, hov = info.get("w"), info.get("hover")
+        if w and hov is not None:
+            self._hover_px = float(hov) * float(w)
+        return self._hover_px
+
+    def _projected_tip(self) -> np.ndarray:
+        """그리기에 쓸 펜촉: 떠 있으면 같은 굵기에서 닿았을 y 로 내린다 (draw_project)."""
+        tip = self.tip
+        c = self.cfg
+        if not c.draw_project:
+            return tip
+        info = self._floor.info if self._floor is not None else {}
+        w = float(info.get("w") or (self.width if math.isfinite(self.width) else 0.0))
+        h = self.hover_px()
+        if self.contact and h < c.stroke_hover_gate * w:
+            return tip          # 안정적으로 닿아 있을 때는 그대로 (평면 잡음이 계단으로 새지 않게)
+        off = min(max(h - c.draw_project_dead * w, 0.0), c.draw_project_max * w)
+        return tip if off <= 0 else tip + np.array([0.0, off])
+
     def _drawing_point(self) -> tuple[float, float] | None:
         """접촉 여부와 무관하게 획과 동일한 좌표계의 펜촉 위치를 제공한다."""
         if self.tip is None or self.uncertain:
             return None
+        tip = self._projected_tip()
         if self.desk is not None:
-            p = self.desk.to_desk(self.tip.reshape(1, 2))[0]
+            p = self.desk.to_desk(tip.reshape(1, 2))[0]
             return (float(p[0]), float(p[1])) if np.isfinite(p).all() else None
         if self.overhead:
-            return float(self.tip[0]) / self.frame_w, -float(self.tip[1]) / self.frame_w
+            return float(tip[0]) / self.frame_w, -float(tip[1]) / self.frame_w
         f = .5 * self.frame_w / math.tan(math.radians(self.cfg.hfov_deg / 2))
-        return table_xy(self.tip, self.frame_w / 2, f, self.cfg.horizon * self.frame_h)
+        horizon = self.cfg.horizon * self.frame_h
+        if self.cfg.floor_horizon and self.floor_mode and self._floor is not None:
+            est = self._floor.horizon_y(float(self.tip[0]))
+            if est is not None and 0 <= est < self.frame_h:  # 화면 밖 추정은 믿지 않는다
+                horizon = est
+        return table_xy(tip, self.frame_w / 2, f, horizon)
+
+    def floor_map(self, frame_bgr: np.ndarray | None, pen_mask: np.ndarray | None) -> dict[str, Any]:
+        """바닥 그라데이션 맵 (개발자 보기). floor 접촉 판정을 쓰고 있을 때만 의미가 있다."""
+        if not self.floor_mode:
+            return {"ready": False, "reason": "contact_method"}
+        if frame_bgr is None:
+            return {"ready": False, "reason": "no_frame"}
+        out = self.floor.render_map(frame_bgr, pen_mask)
+        h, w = frame_bgr.shape[:2]
+        out["tip"] = None if self.tip is None or self.uncertain else [round(float(self.tip[0]) / w, 4), round(float(self.tip[1]) / h, 4)]
+        out["hover"] = self.floor.h_s
+        out["contact"] = bool(self.contact)
+        out["learning"] = len(self.floor.floor.buf)
+        out["depth_roll"] = self._depth_roll_state()
+        return out
+
+    def depth_compare(self, frame_bgr: np.ndarray, pen_mask: np.ndarray | None, model: Any) -> dict[str, Any]:
+        """깊이 모델(개발자 실험)로 책상 평면을 맞추고, 터치로 학습한 바닥 평면과 기울기를 비교한다. 접촉 판정에는 안 쓴다."""
+        import cv2 as _cv2
+
+        from . import depth_model as dm
+        if not self.floor_mode:
+            return {"ready": False, "reason": "contact_method"}
+        size = dm.INPUT_SIZE
+        planes = self.floor.floor_planes(frame_bgr, pen_mask, size)
+        if planes is None:
+            return {"ready": False, "reason": "learning"}
+        floor, wc, valid = planes
+        depth = model.predict(frame_bgr)
+        fit = dm.fit_depth_plane(depth, floor)
+        if fit is None or valid.sum() < 200:
+            return {"ready": False, "reason": "no_floor"}
+        H, W = frame_bgr.shape[:2]
+        cmp_ = dm.compare_planes(fit, wc, valid, (W, H))
+        gy, gx = np.mgrid[0:size[1], 0:size[0]].astype(np.float64)
+        D = fit["A"] * (gx + .5) / size[0] + fit["B"] * (gy + .5) / size[1] + fit["C"]
+
+        def gray(m: np.ndarray, region: np.ndarray) -> np.ndarray:
+            lo, hi = (float(v) for v in np.percentile(m[region], [2, 98]))
+            g = np.clip((m - lo) / max(hi - lo, 1e-9), 0, 1)
+            return np.where(region, 40 + 215 * g, 0).astype(np.uint8)
+
+        from .pen_floor import _png
+        color = _cv2.applyColorMap((255 * np.clip(depth, 0, 1)).astype(np.uint8), _cv2.COLORMAP_INFERNO)
+        return {"ready": True, "size": list(size), "ms": None if model.last_ms is None else round(model.last_ms, 1),
+                "depth_image": _png(color), "fit_image": _png(gray(D, floor)), "touch_image": _png(gray(wc, valid)),
+                "plane_rms": round(fit["rms_rel"], 4), "inlier_frac": round(fit["inlier_frac"], 3), **cmp_}
+
+    def _depth_roll_state(self) -> dict[str, Any] | None:
+        if not self.floor_mode:
+            return None
+        svc, dr = self.depth_service, self.depth_roll
+        fm = self._floor.floor if self._floor is not None else None
+        deg = dr.deg
+        return {"enabled": self.cfg.floor_depth_roll, "available": bool(svc and svc.available),
+                "deg": None if deg is None else round(deg, 2), "n": len(dr.vals),
+                "applied": bool(fm is not None and fm.a_fixed is not None),
+                "a": None if fm is None or fm.a is None else round(float(fm.a), 1),
+                "source": "depth" if fm is not None and fm.a_fixed is not None else "touch",
+                "error": None if svc is None else svc.error}
+
+    def _floor_state(self) -> dict[str, Any] | None:
+        if not self.floor_mode or self._floor is None:
+            return None
+        f = self._floor
+        info = dict(f.info)
+        edge = info.pop("edge", None)
+        r = lambda v: None if v is None else round(float(v), 4)  # noqa: E731
+        return {**info, "edge": None if edge is None else [r(edge[0]), r(edge[1])],
+                "k": r(f.floor.k), "c": r(f.floor.c), "a": r(f.floor.a), "sigma": r(f.floor.sigma), "samples": len(f.floor.buf),
+                "holding": bool(self.floor_dec is not None and self.floor_dec.holding),
+                "reason": "" if self.floor_dec is None else self.floor_dec.reason}
 
     def state(self, consume: bool = True) -> dict[str, Any]:
         ev = list(self.events)
@@ -648,6 +985,11 @@ class PenTracker:
                          "tip_min_cutoff": self.cfg.tip_min_cutoff, "tip_beta": self.cfg.tip_beta,
                          "edge_span": self.cfg.edge_span, "refined_max_age": self.cfg.refined_max_age,
                          "desk_contact_margin": self.cfg.desk_contact_margin},
+            "contact_method": self.cfg.contact_method,
+            "pressed": self.pressed,
+            "floor": self._floor_state(),
+            "depth_roll": self._depth_roll_state(),
+            "skeleton": None if self.skeleton is None else self.skeleton.to_json(),
             "current": self.cur,
             "stroke_count": len(self.strokes),
             "events": ev,

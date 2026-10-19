@@ -1,0 +1,41 @@
+import { cleanup, fireEvent, render, screen, act } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { ResetMappingsButton } from './components/ResetMappingsButton';
+import { PatchJack } from './components/PatchCables';
+import { registerPatchConnection } from './patchConnections';
+import { bindObjectRefs, objectLabel } from './objectRefs';
+import { cables, connect } from './patch';
+import { useApp } from './store';
+import type { ObjectInfo, Profile } from './protocol';
+const empty: Profile = { version: 1, name: 'keep', description: 'keep', mappings: [] };
+afterEach(() => { cleanup(); vi.useRealTimers(); });
+it('keeps cable identity through rename and backend output key order changes', () => {
+  const objects = [{ id: 7, name: 'cup', color: '#fff' }] as ObjectInfo[];
+  const p = bindObjectRefs(connect(empty, 'cup', 'steer'), objects);
+  p.mappings[0]!.output = { axis: 'left_x', target: 'gamepad_axis' };
+  expect(cables(p)[0]).toMatchObject({ object: '#7', fn: 'steer' });
+  objects[0]!.name = 'renamed';
+  expect(objectLabel(cables(p)[0]!.object, objects)).toBe('renamed');
+  expect(bindObjectRefs(p, [{ ...objects[0]!, id: 8 }]).mappings[0]!.input).toMatchObject({ object: '#7' });
+});
+it('keeps jacks available when an older panel unmounts after a new owner registers', () => {
+  const a = vi.fn(), b = vi.fn();
+  const offA = registerPatchConnection(a), offB = registerPatchConnection(b);
+  render(<PatchJack side="fn" name="steer" />);
+  expect(screen.queryByRole('button')).not.toBeNull();
+  act(offA);
+  expect(screen.queryByRole('button')).not.toBeNull();
+  useApp.getState().patchConnect?.('#7', 'steer');
+  expect(b).toHaveBeenCalledWith('#7', 'steer'); expect(a).not.toHaveBeenCalled();
+  act(offB); expect(screen.queryByRole('button')).toBeNull();
+});
+it('requires two presses to clear all mappings and expires confirmation', () => {
+  vi.useFakeTimers(); const edit = vi.fn(), p = connect(empty, '#7', 'steer');
+  render(<ResetMappingsButton draft={p} edit={edit} />);
+  const button = screen.getByRole('button');
+  fireEvent.click(button); expect(edit).not.toHaveBeenCalled();
+  act(() => vi.advanceTimersByTime(4000));
+  fireEvent.click(button); expect(edit).not.toHaveBeenCalled();
+  fireEvent.blur(button); fireEvent.click(button); expect(edit).not.toHaveBeenCalled();
+  fireEvent.click(button); expect(edit).toHaveBeenCalledExactlyOnceWith({ ...p, mappings: [] }, true);
+});

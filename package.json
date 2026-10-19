@@ -7,5 +7,5 @@
     "dev": "npm --prefix frontend run dev",
     "test": "npm --prefix frontend test"
   },
-  "version": "1.0.0"
+  "version": "1.8.0"
 }

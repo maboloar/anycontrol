@@ -17,6 +17,7 @@ from .segment import SegResult, Segmenter
 
 MIN_AREA_FRAC = 0.0008   # 1280x720 에서 약 740px² (27px 정사각형)
 MAX_AREA_FRAC = 0.5
+MAX_CANDIDATES = 2       # 분할 모델의 세 번째 후보(가장 넓거나 가장 작은 조각)는 실제로 거의 쓸모가 없어 앞의 두 개만 쓴다
 
 
 class RegistrationError(ValueError):
@@ -69,15 +70,30 @@ def contrast_score(bgr: np.ndarray, mask: np.ndarray) -> float:
     return round(float(np.clip(d, 0, 1)), 3)
 
 
-def choose_candidate(seg: SegResult, prompt_box: Box | None) -> list[int]:
-    """후보 순서. 박스 프롬프트면 '박스를 잘 채우는' 마스크를, 아니면 모델 점수를 우선한다."""
+def choose_candidate(seg: SegResult, prompt_box: Box | None, scene: np.ndarray | None = None) -> list[int]:
+    """후보 순서. 박스 프롬프트면 '박스를 잘 채우는' 마스크를, 아니면 모델 점수를 우선한다.
+
+    scene(선택) = 정지 배경 모델의 전경 로그 오즈(프레임 해상도). 모든 후보가 함께 덮는 곳(핵심)이 '배경과 달라진' 곳일 때만
+    (물체를 새로 올려놓았거나 움직인 뒤), 확실한 배경(책상·벽 그대로)을 많이 덮은 후보를 덜 고른다.
+    물체가 처음부터 거기 있어 배경에 배어 있으면(모든 후보가 배경처럼 보임) 아무것도 바꾸지 않는다."""
+    use_scene = False
+    if scene is not None and seg.masks and scene.shape == seg.masks[0].shape:
+        core = np.logical_and.reduce([m.astype(bool) for m in seg.masks])
+        if core.sum() < 30:
+            core = min((m.astype(bool) for m in seg.masks), key=lambda m: int(m.sum()))
+        vals = scene[core]
+        use_scene = vals.size >= 30 and float(np.median(vals)) > 0.5
     order = []
     for i, (m, s) in enumerate(zip(seg.masks, seg.scores, strict=True)):
         b = mask_to_box(m)
         if b is None:
             continue
         fit = box_iou(b, prompt_box) if prompt_box is not None else 1.0
-        order.append((s * (0.3 + 0.7 * fit), i))
+        score = s * (0.3 + 0.7 * fit)
+        if use_scene:
+            bg = float((scene[m.astype(bool)] < -2.0).mean())
+            score *= 1.0 - 0.8 * bg
+        order.append((score, i))
     order.sort(reverse=True)
     return [i for _, i in order]
 
@@ -108,7 +124,8 @@ def register_line(frame: np.ndarray, segmenter: Segmenter, tip: tuple[float, flo
 
 
 def register(frame: np.ndarray, segmenter: Segmenter, box: Box | None = None,
-             point: tuple[float, float] | None = None, candidate: int | None = None) -> Registration:
+             point: tuple[float, float] | None = None, candidate: int | None = None,
+             scene: np.ndarray | None = None) -> Registration:
     h, w = frame.shape[:2]
     if box is not None:
         box = (max(0.0, box[0]), max(0.0, box[1]), min(float(w), box[2]), min(float(h), box[3]))
@@ -116,7 +133,7 @@ def register(frame: np.ndarray, segmenter: Segmenter, box: Box | None = None,
             raise RegistrationError("선택한 영역이 너무 작습니다. 물체를 조금 더 크게 드래그하세요.")
     pts = [(point[0], point[1], 1)] if point is not None else None
     seg = segmenter.segment(frame, box=box, points=pts)
-    order = choose_candidate(seg, box)
+    order = choose_candidate(seg, box, scene)[:MAX_CANDIDATES]
     if not order:
         raise RegistrationError("물체를 찾지 못했습니다. 물체 위를 다시 클릭하거나 드래그하세요.")
     idx = order[0] if candidate is None else order[candidate % len(order)]

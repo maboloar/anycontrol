@@ -1,0 +1,18 @@
+# Local dependencies and generated files
+.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+*.tsbuildinfo
+.DS_Store
+frontend/dist/
+# Upload executable bundles as GitHub Release assets.
+releases/
+# Local backups, recordings, profiles and logs
+.backup*/
+*.log
+.env
+.env.*
+!.env.example

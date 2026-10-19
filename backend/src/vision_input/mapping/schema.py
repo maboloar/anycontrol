@@ -30,7 +30,7 @@ GAMEPAD_BUTTONS: tuple[str, ...] = ("a", "b", "x", "y", "lb", "rb", "back", "sta
                                     "up", "down", "left", "right", "home")
 KEY_RE = re.compile(r"^([a-z0-9]|space|enter|tab|escape|backspace|shift|ctrl|alt|meta|"
                     r"arrowup|arrowdown|arrowleft|arrowright|f([1-9]|1[0-2]))$")
-HandGesture = Literal["pinch", "pinch_middle"]
+HandGesture = Literal["pinch", "pinch_middle", "x", "y"]
 
 
 # ---------------------------------------------------------------- 입력
@@ -57,13 +57,21 @@ class PenContactInput(BaseModel):
 
 
 class HandInput(BaseModel):
-    """손 제스처. pinch = 엄지+검지 집기, pinch_middle = 엄지+가운뎃손가락 집기 (누르면 1)."""
+    """손 집게 버튼 또는 손바닥 영상 XY (화면 중앙 0, 오른쪽/아래 +)."""
 
     source: Literal["hand"] = "hand"
     gesture: HandGesture = "pinch"
 
 
-Input = Annotated[ObjectAxisInput | ObjectVisibleInput | PenContactInput | HandInput, Field(discriminator="source")]
+class ObjectTouchInput(BaseModel):
+    """인식된 손의 일부가 물체에 닿으면 1. 버튼·키 출력용."""
+
+    source: Literal["touch"] = "touch"
+    object: str = Field(min_length=1, max_length=40)
+
+
+Input = Annotated[ObjectAxisInput | ObjectVisibleInput | PenContactInput | HandInput | ObjectTouchInput,
+                  Field(discriminator="source")]
 
 
 # ---------------------------------------------------------------- 출력
@@ -102,11 +110,22 @@ class MouseOutput(BaseModel):
     action: Literal["move_x", "move_y", "scroll", "left", "right"]
 
 
-Output = Annotated[GamepadAxisOutput | GamepadButtonOutput | KeyOutput | MouseOutput, Field(discriminator="target")]
+class ControlOutput(BaseModel):
+    """앱 안 데모의 조작 요소 (예: DJ 의 볼륨 페이더 'dj.volA'). OS·게임패드로는 나가지 않고 화면의 데모가 읽는다.
+    kind: bipolar(-1..1, 노브·크로스페이더) | unipolar(0..1, 페이더) | digital(버튼)."""
+
+    target: Literal["control"] = "control"
+    name: str = Field(min_length=1, max_length=40, pattern=r"^[a-zA-Z0-9_.-]+$")
+    kind: Literal["bipolar", "unipolar", "digital"] = "digital"
 
 
-def output_kind(o: GamepadAxisOutput | GamepadButtonOutput | KeyOutput | MouseOutput) -> str:
+Output = Annotated[GamepadAxisOutput | GamepadButtonOutput | KeyOutput | MouseOutput | ControlOutput, Field(discriminator="target")]
+
+
+def output_kind(o: GamepadAxisOutput | GamepadButtonOutput | KeyOutput | MouseOutput | ControlOutput) -> str:
     """bipolar(-1..1) | unipolar(0..1) | digital(on/off)."""
+    if isinstance(o, ControlOutput):
+        return o.kind
     if isinstance(o, GamepadAxisOutput):
         return "unipolar" if o.axis in UNIPOLAR_AXES else "bipolar"
     if isinstance(o, MouseOutput):
@@ -114,7 +133,9 @@ def output_kind(o: GamepadAxisOutput | GamepadButtonOutput | KeyOutput | MouseOu
     return "digital"
 
 
-def output_key(o: GamepadAxisOutput | GamepadButtonOutput | KeyOutput | MouseOutput) -> str:
+def output_key(o: GamepadAxisOutput | GamepadButtonOutput | KeyOutput | MouseOutput | ControlOutput) -> str:
+    if isinstance(o, ControlOutput):
+        return f"control:{o.name}"
     if isinstance(o, GamepadAxisOutput):
         return f"axis:{o.axis}"
     if isinstance(o, GamepadButtonOutput):

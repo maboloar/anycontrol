@@ -20,6 +20,7 @@ class RefreshAnchor:
     template: np.ndarray
     color_table: np.ndarray
     base_probability: float
+    scene: np.ndarray | None = None   # 정지 배경 모델 전경 로그 오즈 (작업 해상도). 배경 그대로인 곳으로 번진 후보를 버린다
 
 
 def choose_mask(masks: list[np.ndarray], scores: list[float], anchor: RefreshAnchor,
@@ -40,6 +41,11 @@ def choose_mask(masks: list[np.ndarray], scores: list[float], anchor: RefreshAnc
         if (mask & anchor.forbidden).sum() > .08 * max(mask.sum(), 1):
             continue
         mask = mask & ~anchor.forbidden
+        if anchor.scene is not None and anchor.scene.shape == mask.shape and mask.any():
+            bg = mask & (anchor.scene < -2.5)
+            if bg.sum() > .25 * mask.sum():
+                continue
+            mask = mask & ~bg
         # 모델이 별도 덩어리도 반환하면 사전 영역에 닿은 하나만 택한다.
         n, labels, _, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
         if n <= 1:

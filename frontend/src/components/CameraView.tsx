@@ -1,5 +1,8 @@
+import { connectVideoObject, fittedVideoRect } from "../videoMapping";
+import { BetaBadge } from "./BetaBadge";
 import { useEffect, useRef, useState } from "react";
-import { addObject, putCalibration, putLineCalibration, reselectObject, type AddObjectReq } from "../api";
+import { CameraBuddy } from "./CameraBuddy";
+import { addObject, reselectObject, type AddObjectReq } from "../api";
 import { connection, type DecodedFrame } from "../connection";
 import {
   calibrationOpacity,
@@ -9,6 +12,7 @@ import {
   drawObjects,
   drawPen,
   drawPendingPoint,
+  drawTouch,
   selectionFrom,
   toNorm,
   type Norm,
@@ -19,6 +23,8 @@ import { ResizeHandle, useResizable } from "./useResizable";
 import { CameraTools } from "./CameraTools";
 import { Panel } from "./Panel";
 import { Info } from "./Info";
+import { t } from "../i18n";
+import { sv } from "../serverText";
 
 /**
  * 카메라 미리보기 + 추적 오버레이 + 물체 선택(드래그 = 박스, 클릭 = 점).
@@ -32,6 +38,7 @@ export function CameraView() {
   const floatingDrag = useFloatingDrag();
   const [floating, setFloating] = useState(false);
   const [floatingMinimized, setFloatingMinimized] = useState(false);
+  const floatingOn = useApp((s) => s.floatingCamera);
   const floatingMinimizedRef = useRef(false);
   useEffect(() => {
     const reset = () => { floatingMinimizedRef.current = false; setFloatingMinimized(false); dirtyRef.current = true; };
@@ -42,7 +49,6 @@ export function CameraView() {
   const dirtyRef = useRef(true);
   const flashAt = useRef(-Infinity);
   const showCalibrationRef = useRef(false);
-  const [showCalibration, setShowCalibration] = useState(false);
   const calibration = useApp((s) => s.calibration);
   useEffect(() => {
     if (calibration?.calibrated && (calibration.quad || calibration.line)) flashAt.current = performance.now();
@@ -52,6 +58,7 @@ export function CameraView() {
   const pendingRef = useRef<Norm | null>(null); // 펜 모드: 첫 번째로 찍은 펜촉
   const [pending, setPending] = useState(false);
   const calibRef = useRef<Norm[]>([]); // 책상 보정: 찍은 종이 모서리
+  const pendingFn = useApp(s => s.patchDrag?.from.kind === "fn" ? s.patchDrag.from.id : null);
   const selectMode = useApp((s) => s.selectMode);
   const reselectId = useApp((s) => s.reselectId);
   const reselectObj = useApp((s) => (s.reselectId === null ? undefined : s.objects.find((o) => o.id === s.reselectId)));
@@ -66,13 +73,13 @@ export function CameraView() {
   }, [reselectId, reselectObj]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  useEffect(() => { if (pendingFn) setMessage(null); }, [pendingFn]);
 
   useEffect(() => {
     const cancel = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       const app = useApp.getState();
       if (app.reselectId !== null) app.setReselect(null);
-      if (app.selectMode === "calib" || app.selectMode === "calib-line") app.setSelectMode("object"); // 종이·수평 찍기 취소
       dragRef.current = null;
       pendingRef.current = null;
       calibRef.current = [];
@@ -178,10 +185,10 @@ export function CameraView() {
         if (view.overlays.objects) drawObjects(ctx, st.objects, useApp.getState().selectedId, w, h, mirrorRef.current);
         if (st.hands && view.overlays.hands) drawHands(ctx, st.hands, w, h, st.mouse?.gesture, mirrorRef.current);
         if (st.pens && st.size && view.overlays.pens) for (const p of Object.values(st.pens)) drawPen(ctx, p, st.size, w, h, mirrorRef.current);
+        if (st.touch && view.devMode && view.touchOverlay) drawTouch(ctx, st.touch, w, h, mirrorRef.current);
       }
       const d = dragRef.current;
       if (d && useApp.getState().selectMode === "object") drawDrag(ctx, d.start, d.end, w, h, mirrorRef.current);
-      if (useApp.getState().selectMode === "calib") drawPaperPath(ctx, calibRef.current, w, h, mirrorRef.current);
       for (const p of calibRef.current) drawPendingPoint(ctx, p, w, h, mirrorRef.current);
       const pend = pendingRef.current;
       if (pend) drawPendingPoint(ctx, pend, w, h, mirrorRef.current);
@@ -200,46 +207,41 @@ export function CameraView() {
     };
   }, []);
 
+  const pointerRect = (canvas: HTMLCanvasElement) => {
+    const rect = canvas.getBoundingClientRect();
+    return canvas === floatingRef.current ? fittedVideoRect(rect, canvas.width, canvas.height) : rect;
+  };
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (busy || e.button !== 0) return;
-    const p = toNorm(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect(), mirrorRef.current);
+    const p = toNorm(e.clientX, e.clientY, pointerRect(e.currentTarget), mirrorRef.current);
     dragRef.current = { start: p, end: p, shift: e.shiftKey };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!dragRef.current) return;
-    dragRef.current.end = toNorm(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect(), mirrorRef.current);
+    dragRef.current.end = toNorm(e.clientX, e.clientY, pointerRect(e.currentTarget), mirrorRef.current);
+  };
+  const connectFromVideo = (e: React.PointerEvent<HTMLCanvasElement>, d: typeof dragRef.current) => {
+    const app = useApp.getState(), cable = app.patchDrag;
+    if (cable?.from.kind !== "fn" || !app.patchConnect) return false;
+    const rect = pointerRect(e.currentTarget);
+    const inFrame = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
+    const point = toNorm(e.clientX, e.clientY, rect, mirrorRef.current);
+    const clicked = !d || selectionFrom(d.start, point, rect).kind === "point";
+    const target = clicked && inFrame ? connectVideoObject(point, connection.latestState?.objects ?? app.objects) : undefined;
+    if (target) setMessage({ text: t(`${target.name}에 매핑을 연결했습니다.`, `Mapping connected to ${target.name}.`), error: false });
+    else {
+      app.setPatchDrag({ ...cable, sticky: true, x: e.clientX, y: e.clientY });
+      setMessage({ text: t("영상의 등록된 물체를 클릭하세요. 손·배경에는 연결하지 않습니다. ESC 취소.", "Click a registered object in the video. Hands and background are excluded. ESC cancels."), error: false });
+    }
+    return true;
   };
   const onPointerUp = async (e: React.PointerEvent<HTMLCanvasElement>) => {
     const d = dragRef.current;
     dragRef.current = null;
+    if (connectFromVideo(e, d)) return;
     if (!d) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    if (useApp.getState().selectMode === "calib" || useApp.getState().selectMode === "calib-line") {
-      const line = useApp.getState().selectMode === "calib-line";
-      const pts = [...calibRef.current, toNorm(e.clientX, e.clientY, rect, mirrorRef.current)];
-      calibRef.current = pts;
-      const needed = line ? 2 : 4;
-      if (pts.length < needed) {
-        setMessage({ text: line ? "책상 기준선의 반대쪽 끝을 찍으세요." : `📄 종이 모서리 ${pts.length}/4 — ${["", "두", "세", "네"][pts.length]} 번째 모서리를 찍으세요 (순서 무관). ESC 취소.`, error: false });
-        return;
-      }
-      calibRef.current = [];
-      setBusy(true);
-      try {
-        const r = line ? await putLineCalibration(pts) : await putCalibration(pts);
-        useApp.getState().setCalibration(r);
-        useApp.getState().setSelectMode("object");
-        setMessage({ text: line ? "기준선 보정 완료. 수평 촬영에서는 손 크기 변화로 깊이 이동을 보완합니다."
-          : r.yaw_ok ? "📄 종이 보정 완료. 이제 종이 = 마우스 패드입니다 (종이는 치워도 됩니다). 책상 좌우·앞뒤·회전 축도 쓸 수 있습니다."
-          : "📄 종이 보정 완료. 다만 카메라가 거의 수평이라 책상 위 회전은 부정확합니다 (좌우·앞뒤만 권장). 종이는 치워도 됩니다.", error: !line && !r.yaw_ok });
-      } catch (err) {
-        setMessage({ text: String(err instanceof Error ? err.message : err).replace(/^\d+ /, ""), error: true });
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
     const app = useApp.getState();
     const target = app.reselectId === null ? undefined : app.objects.find((o) => o.id === app.reselectId);
     if (target && target.kind === "pen") { // 다시 선택(펜): 등록과 같은 두 점
@@ -248,7 +250,7 @@ export function CameraView() {
       if (!first) {
         pendingRef.current = p;
         setPending(true);
-        setMessage({ text: "이제 펜의 반대쪽 끝(손잡이 쪽)을 찍으세요. ESC 로 취소.", error: false });
+        setMessage({ text: t("이제 펜의 반대쪽 끝(손잡이 쪽)을 찍으세요. ESC 로 취소.", "Now click the other end of the pen (the grip). ESC cancels."), error: false });
         return;
       }
       pendingRef.current = null;
@@ -265,7 +267,7 @@ export function CameraView() {
       const sel = selectionFrom(d.start, toNorm(e.clientX, e.clientY, rect, mirrorRef.current), rect);
       const obj = app.objects.find((o) => o.id === app.selectedId);
       if (obj && sel.kind === "box") {
-        if (obj.kind === "pen") setMessage({ text: "펜은 [다시 선택] 버튼을 누르고 펜촉·반대쪽 끝 두 점을 찍으세요.", error: true });
+        if (obj.kind === "pen") setMessage({ text: t("펜은 [다시 선택] 버튼을 누르고 펜촉·반대쪽 끝 두 점을 찍으세요.", "For a pen, press [Reselect] and click the tip and the other end."), error: true });
         else await reselect(obj.id, { box: sel.box });
         return;
       }
@@ -276,7 +278,7 @@ export function CameraView() {
       if (!first) {
         pendingRef.current = p;
         setPending(true);
-        setMessage({ text: "이제 펜의 반대쪽 끝(손잡이 쪽)을 찍으세요. ESC 로 취소.", error: false });
+        setMessage({ text: t("이제 펜의 반대쪽 끝(손잡이 쪽)을 찍으세요. ESC 로 취소.", "Now click the other end of the pen (the grip). ESC cancels."), error: false });
         return;
       }
       pendingRef.current = null;
@@ -300,11 +302,11 @@ export function CameraView() {
 
   const register = async (req: AddObjectReq) => {
     setBusy(true);
-    setMessage({ text: "line" in req ? "펜을 찾는 중…" : "물체를 분할하는 중…", error: false });
+    setMessage({ text: "line" in req ? t("펜을 찾는 중…", "Finding the pen…") : t("물체를 분할하는 중…", "Segmenting the object…"), error: false });
     try {
       const obj = await addObject(req);
       useApp.getState().select(obj.id);
-      setMessage(obj.warnings.length ? { text: obj.warnings.join(" "), error: false } : null);
+      setMessage(obj.warnings.length ? { text: obj.warnings.map(sv).join(" "), error: false } : null);
     } catch (err) {
       setMessage({ text: String(err instanceof Error ? err.message : err).replace(/^\d+ /, ""), error: true });
     } finally {
@@ -315,102 +317,106 @@ export function CameraView() {
   const reselect = async (id: number, req: AddObjectReq) => {
     useApp.getState().setReselect(null);
     setBusy(true);
-    setMessage({ text: "다시 분할하는 중…", error: false });
+    setMessage({ text: t("다시 분할하는 중…", "Re-segmenting…"), error: false });
     try {
       const obj = await reselectObject(id, req);
       useApp.getState().select(obj.id);
-      setMessage({ text: `${obj.name}: 모양을 새로 기억했습니다.${obj.warnings.length ? " " + obj.warnings.join(" ") : ""}`, error: false });
+      setMessage({ text: `${obj.name}: ${t("모양을 새로 기억했습니다.", "New shape remembered.")}${obj.warnings.length ? " " + obj.warnings.map(sv).join(" ") : ""}`, error: false });
     } catch (err) {
-      setMessage({ text: `다시 선택 실패: ${String(err instanceof Error ? err.message : err).replace(/^\d+ /, "")}`, error: true });
+      setMessage({ text: `${t("다시 선택 실패", "Reselect failed")}: ${String(err instanceof Error ? err.message : err).replace(/^\d+ /, "")}`, error: true });
     } finally {
       setBusy(false);
     }
   };
 
-  const hint = reselectObj
+  const hint = pendingFn
+    ? t("케이블을 연결할 등록 물체를 영상에서 클릭하세요. 연결선은 물체 카드 잭에 이어집니다. ESC 취소.", "Click a registered object in the video to connect this cable to its card jack. ESC cancels.")
+    : reselectObj
     ? reselectObj.kind === "pen"
       ? pending
-        ? `다시 선택 (${reselectObj.name}): 펜의 반대쪽 끝(손잡이 쪽)을 찍으세요. ESC 취소.`
-        : `다시 선택 (${reselectObj.name}): 먼저 펜촉을 찍으세요. ESC 취소.`
-      : `다시 선택 (${reselectObj.name}): 물체를 드래그해서 감싸거나 클릭하세요. ESC 취소.`
-    : selectMode === "calib-line"
-    ? "수평 촬영: 책상 위 좌우 기준선 양 끝을 찍으세요."
-    : selectMode === "calib"
-    ? "📄 종이 선택: 손·물체를 움직일 자리에 A4 종이를 가로로 놓고, 영상에서 종이의 네 모서리를 찍으세요 (순서 무관). ESC 취소."
+        ? t(`다시 선택 (${reselectObj.name}): 펜의 반대쪽 끝(손잡이 쪽)을 찍으세요. ESC 취소.`, `Reselect (${reselectObj.name}): click the other end of the pen (the grip). ESC cancels.`)
+        : t(`다시 선택 (${reselectObj.name}): 먼저 펜촉을 찍으세요. ESC 취소.`, `Reselect (${reselectObj.name}): click the pen tip first. ESC cancels.`)
+      : t(`다시 선택 (${reselectObj.name}): 물체를 드래그해서 감싸거나 클릭하세요. ESC 취소.`, `Reselect (${reselectObj.name}): drag around or click the object. ESC cancels.`)
     : selectMode === "pen"
       ? pending
-        ? "펜의 반대쪽 끝(손잡이 쪽)을 찍으세요."
-        : "펜 등록: 먼저 펜촉(책상에 닿는 끝)을 찍으세요."
-      : "추적할 물체를 드래그해서 감싸거나, 물체 위를 클릭하세요. (Shift+드래그 = 선택된 물체 다시 선택)";
+        ? t("펜의 반대쪽 끝(손잡이 쪽)을 찍으세요.", "Click the other end of the pen (the grip).")
+        : t("펜 등록: 먼저 펜촉(책상에 닿는 끝)을 찍으세요.", "Register pen: click the tip (the end touching the desk) first.")
+      : t("추적할 물체를 드래그해서 감싸거나, 물체 위를 클릭하세요. (Shift+드래그 = 선택된 물체 다시 선택)", "Drag around an object to track, or click on it. (Shift+drag = reselect the selected object)");
 
   const conn = useApp((s) => s.conn);
   const status = useApp((s) => s.telemetry?.source?.status);
   const error = useApp((s) => s.telemetry?.source?.error);
   const size = useApp((s) => s.frameSize);
   const paused = useApp((s) => s.telemetry?.source?.paused);
+  const floorOverlay = useApp((s) => (s.devMode && s.floorOverlay ? s.floorMap?.overlay : undefined));
+  const depthOverlay = useApp((s) => (s.devMode && s.depthMapOverlay && s.depthMap?.ready ? s.depthMap.overlay : undefined));
+  const previewMirror = useApp((s) => s.previewMirror);
+  const depthOpacity = useApp((s) => s.depthMapOpacity);
 
   return (
     <>
-    <Panel title="카메라 미리보기" className="camera-panel" info={<>영상에서 물체를 <b>드래그·클릭</b>해 등록합니다. 아래로 스크롤해
-      영상이 1/3 이상 가려지면 작은 실시간 영상이 뜹니다. 그 창은 제목 줄을 끌어 옮길 수 있습니다.</>}>
+    <Panel title={t("카메라 미리보기", "Camera preview")} label="카메라 미리보기" className="camera-panel" info={t(<>영상에서 물체를 <b>드래그·클릭</b>해 등록합니다. 아래로 스크롤해
+      영상이 1/3 이상 가려지면 작은 실시간 영상이 뜹니다. 그 창은 제목 줄을 끌어 옮길 수 있습니다.</>,
+      <><b>Drag or click</b> objects in the video to register them. When you scroll and over a third of the video is hidden, a small live view appears; drag its title bar to move it.</>)}>
     <div className="camera-col">
       <div data-tour="tools"><CameraTools /></div>
       <div ref={viewRef} data-tour="camera" className="camera-view" style={size ? { aspectRatio: `${size.width} / ${size.height}` } : undefined}>
         <canvas
           ref={canvasRef}
-          aria-label="카메라 미리보기. 물체를 드래그하거나 클릭해 등록합니다."
+          data-video-map-target
+          aria-label={t("카메라 미리보기. 물체를 드래그하거나 클릭해 등록합니다.", "Camera preview. Drag or click an object to register it.")}
           role="img"
-          className={`${busy ? "busy" : ""} ${reselectObj ? "reselecting" : ""}`}
+          className={`${busy ? "busy" : ""} ${reselectObj ? "reselecting" : ""} ${pendingFn ? "mapping-target" : ""}`}
           onPointerDown={onPointerDown}
+          onPointerEnter={(e) => jelly(e.currentTarget)}
+          onAnimationEnd={(e) => { if (e.animationName === "egg-jelly") e.currentTarget.classList.remove("jelly"); }}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={() => (dragRef.current = null)}
         />
+        {floorOverlay && <img className="floor-overlay" src={floorOverlay} alt="" aria-hidden="true"
+          style={previewMirror ? { transform: "scaleX(-1)" } : undefined} />}
+        {depthOverlay && <img className="depth-overlay" src={depthOverlay} alt="" aria-hidden="true"
+          style={{ opacity: depthOpacity, ...(previewMirror ? { transform: "scaleX(-1)" } : {}) }} />}
         {(conn !== "open" || status !== "running") && (
           <div className="camera-overlay" role="status">
-            {conn !== "open" ? "백엔드에 연결 중…" : status === "off" ? "카메라 꺼짐" : (error ?? `카메라 상태: ${status ?? "알 수 없음"}`)}
+            {conn !== "open" ? t("백엔드에 연결 중…", "Connecting to backend…") : status === "off"
+              ? <span className="camera-offline"><CameraBuddy size={40} sleeping />{t("카메라 오프라인", "Camera offline")}</span>
+              : (error ? sv(error) : t(`카메라 상태: ${status ?? "알 수 없음"}`, `Camera status: ${status ?? "unknown"}`))}
           </div>
         )}
-        {paused && status === "running" && <span className="camera-badge">일시정지 · 등록 상태 유지</span>}
+        {paused && status === "running" && <span className="camera-badge">{t("일시정지 · 등록 상태 유지", "Paused · registrations kept")}</span>}
       </div>
-      <div className="row select-mode" role="radiogroup" aria-label="등록 방식">
+      <div className="row select-mode" role="radiogroup" aria-label={t("등록 방식", "Selection mode")}>
         <button type="button" role="radio" aria-checked={selectMode === "object"}
           className={selectMode === "object" ? "active" : ""} data-tour="select-object"
-          onClick={() => { setMessage(null); useApp.getState().setSelectMode("object"); }}>물체 (드래그·클릭)</button>
-        <Info>물체를 드래그로 감싸거나 클릭하면 AI가 윤곽을 따서 추적을 시작합니다. 이때 <b>모양·색을 기억</b>해서 놓쳐도 다시 찾습니다. 최대 6개.</Info>
+          onClick={() => { setMessage(null); useApp.getState().setSelectMode("object"); }}>{t("물체 (드래그·클릭)", "Object (drag / click)")}</button>
+        <Info>{t(<>물체를 드래그로 감싸거나 클릭하면 AI가 윤곽을 따서 추적을 시작합니다. 이때 <b>모양·색을 기억</b>해서 놓쳐도 다시 찾습니다. 최대 6개.</>, <>Drag around or click an object and the AI outlines it and starts tracking. Its <b>shape and color are remembered</b> to re-find it. Up to 6.</>)}</Info>
         <button type="button" role="radio" aria-checked={selectMode === "pen"}
           className={selectMode === "pen" ? "active" : ""} data-tour="select-pen"
-          onClick={() => { setMessage(null); useApp.getState().setSelectMode("pen"); }}>펜 (두 점)</button>
-        <Info>펜촉(책상에 닿는 끝)을 먼저, 반대쪽 끝을 나중에 찍습니다. 펜촉이 책상에 닿으면 그리기·클릭으로 씁니다.</Info>
-        <button type="button" role="radio" aria-checked={selectMode === "calib"}
-          className={selectMode === "calib" ? "active" : ""} data-tour="select-calib"
-          onClick={() => { setMessage(null); calibRef.current = []; useApp.getState().setSelectMode("calib"); }}>📄 종이 선택 (책상 보정)</button>
-        <Info wide>A4 종이를 책상에 가로로 놓고 영상에서 네 모서리를 찍으면, 카메라에 <b>사다리꼴</b>로 보이던 책상이 반듯하게 펴집니다.
-          가장자리에서 커서가 비스듬히 가는 문제를 고치고, 책상 좌우·앞뒤 축과 펜 그리기 좌표에도 씁니다. 찍은 뒤 종이는 치워도 됩니다.</Info>
-        <button type="button" role="radio" aria-checked={selectMode === "calib-line"}
-          className={selectMode === "calib-line" ? "active" : ""}
-          onClick={() => { setMessage(null); calibRef.current = []; useApp.getState().setSelectMode("calib-line"); }}>수평 보정 (기준선 2점)</button>
-        <Info>카메라가 거의 수평이라 종이가 납작한 띠로 보일 때, 책상 위 좌우 기준선의 양 끝 두 점만 찍습니다.</Info>
+          onClick={() => { setMessage(null); useApp.getState().setSelectMode("pen"); }}>{t("펜 (두 점)", "Pen (two points)")}<BetaBadge /></button>
+        <Info>{t("펜촉(책상에 닿는 끝)을 먼저, 반대쪽 끝을 나중에 찍습니다. 펜촉이 책상에 닿으면 그리기·클릭으로 씁니다.", "Click the tip (the end touching the desk) first, then the other end. Touching the desk draws or clicks.")}</Info>
         <p className={`hint ${message?.error ? "error" : ""}`} role="status" aria-live="polite">
           {message?.text ?? hint}
         </p>
       </div>
-      {calibration?.calibrated && calibration.mode !== "deskview" && <label className="check small">
-        <input type="checkbox" checked={showCalibration} onChange={(e) => {
-          showCalibrationRef.current = e.target.checked; setShowCalibration(e.target.checked); dirtyRef.current = true;
-        }} />{calibration.mode === "line" ? "수평 기준선 표시" : "책상 구역 표시"}</label>}
     </div>
     </Panel>
-    {floating && <div className={`floating-camera ${floatingMinimized ? "minimized" : ""}`} aria-label="고정 카메라 미리보기" style={{ ...floatingResize.style, ...floatingDrag.style, ...(floatingMinimized ? { height: undefined } : {}) }}>
-      <div className="floating-header" {...floatingDrag.handlers} title="끌어서 옮기기 · 두 번 클릭하면 오른쪽 위로">
-        <span>⠿ 실시간 카메라{paused ? " · 일시정지" : ""}</span>
-        <button type="button" className="minimize" aria-label={`실시간 카메라 ${floatingMinimized ? "펼치기" : "최소화"}`}
+    {floating && floatingOn && <div className={`floating-camera ${floatingMinimized ? "minimized" : ""}`} aria-label={t("고정 카메라 미리보기", "Pinned camera preview")} style={{ ...floatingResize.style, ...floatingDrag.style, ...(floatingMinimized ? { height: undefined } : {}) }}>
+      <div className="floating-header" {...floatingDrag.handlers} title={t("끌어서 옮기기 · 두 번 클릭하면 오른쪽 아래로", "Drag to move · Double-click to return to the bottom right")}>
+        <span>⠿ {t("실시간 카메라", "Live camera")}{paused ? t(" · 일시정지", " · Paused") : ""}</span>
+        <button type="button" className="minimize" aria-label={t(`실시간 카메라 ${floatingMinimized ? "펼치기" : "최소화"}`, `${floatingMinimized ? "Expand" : "Collapse"} live camera`)}
           aria-expanded={!floatingMinimized} onClick={() => {
             const next = !floatingMinimized; floatingMinimizedRef.current = next; setFloatingMinimized(next); dirtyRef.current = true;
           }}>{floatingMinimized ? "+" : "−"}</button>
       </div>
-      <canvas ref={floatingRef} aria-hidden="true" hidden={floatingMinimized} />
-      {!floatingMinimized && <ResizeHandle label="실시간 카메라" grip={floatingResize.grip} />}
+      <canvas ref={floatingRef} hidden={floatingMinimized} data-video-map-target role="img"
+        aria-label={t("실시간 카메라. 기능 잭에서 집은 케이블을 영상의 물체에 연결할 수 있습니다.", "Live camera. Connect a held function cable to an object in the video.")}
+        className={pendingFn ? "mapping-target" : ""}
+        onPointerDown={e => { if (useApp.getState().patchDrag?.from.kind === "fn") onPointerDown(e); }}
+        onPointerMove={onPointerMove} onPointerUp={e => { const d = dragRef.current; dragRef.current = null; connectFromVideo(e, d); }}
+        onPointerCancel={() => { dragRef.current = null; }} />
+      {!floatingMinimized && <ResizeHandle label={t("실시간 카메라", "Live camera")} grip={floatingResize.grip} />}
     </div>}
     </>
   );
@@ -429,11 +435,11 @@ const FLOAT_POS_KEY = "anycontrol.floating-camera.pos";
 type Pos = { left: number; top: number };
 
 /** 떠 있는 창을 화면 안에 들어오게 당긴다 (창이 줄어들어도 헤더는 항상 잡을 수 있게) */
-export function clampFloating(p: Pos, size: { width: number; height: number }, vp: { width: number; height: number }): Pos {
+export function clampFloating(p: Pos, size: { width: number; height: number }, vp: { width: number; height: number }, minTop = 8): Pos {
   const m = 8;
   return {
     left: Math.round(Math.max(m, Math.min(p.left, vp.width - size.width - m))),
-    top: Math.round(Math.max(m, Math.min(p.top, vp.height - Math.min(size.height, 40) - m))),
+    top: Math.round(Math.max(minTop, Math.min(p.top, vp.height - Math.min(size.height, 40) - m))),
   };
 }
 
@@ -456,9 +462,11 @@ function useFloatingDrag() {
     };
   }, []);
   const vp = () => ({ width: window.innerWidth, height: window.innerHeight });
+  /** 실제 입력 상단바가 고정되어 있으면 그 아래까지만 올릴 수 있다 */
+  const bannerBottom = () => Math.max(8, (document.querySelector(".topbar.real-active")?.getBoundingClientRect().bottom ?? 0) + 8);
   const move = (el: HTMLElement, p: Pos) => {
     const r = el.getBoundingClientRect();
-    const next = clampFloating(p, r, vp());
+    const next = clampFloating(p, r, vp(), bannerBottom());
     setPos(next);
     return next;
   };
@@ -492,26 +500,18 @@ function useFloatingDrag() {
   // 창 크기가 바뀌면 화면 밖으로 나가지 않게 다시 당긴다
   useEffect(() => {
     if (!pos) return;
-    const onResize = () => setPos((p) => (p ? clampFloating(p, { width: 220, height: 40 }, vp()) : p));
+    const onResize = () => setPos((p) => (p ? clampFloating(p, { width: 220, height: 40 }, vp(), bannerBottom()) : p));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [pos]);
-  const style: React.CSSProperties = pos ? { left: pos.left, top: pos.top, right: "auto" } : {};
+  const style: React.CSSProperties = pos ? { left: pos.left, top: `max(${pos.top}px, var(--float-min-top, 0px))`, right: "auto", bottom: "auto" } : {};
   return { style, handlers };
 }
 
-/** 종이 선택 중: 찍은 모서리를 점선으로 이어 그린다 (4점이 모이기 전 모양 확인용) */
-function drawPaperPath(ctx: CanvasRenderingContext2D, pts: Norm[], w: number, h: number, mirror: boolean) {
-  if (pts.length < 2) return;
-  ctx.save();
-  ctx.strokeStyle = "#4cc9f0";
-  ctx.lineWidth = 2;
-  ctx.setLineDash([8, 6]);
-  ctx.beginPath();
-  pts.forEach(([x, y], i) => {
-    const px = (mirror ? 1 - x : x) * w;
-    if (i) ctx.lineTo(px, y * h); else ctx.moveTo(px, y * h);
-  });
-  ctx.stroke();
-  ctx.restore();
+/** 이스터에그 모드에서 마우스가 영상 위로 들어오면 한 번 젤리처럼 출렁인다 */
+function jelly(el: HTMLElement) {
+  if (!document.documentElement.classList.contains("rainbow-mode")) return;
+  el.classList.remove("jelly");
+  void el.offsetWidth; // 애니메이션을 처음부터 다시 시작
+  el.classList.add("jelly");
 }

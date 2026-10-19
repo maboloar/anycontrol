@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
+import { t } from '../i18n';
 
 type Size = { width: number; height?: number };
 /** 크기만 바꾼다. 자식과 추적/게임 상태는 유지한다. */
@@ -64,14 +65,14 @@ export function useResizable(key: string, { minWidth = 220, minHeight = 100, flo
 }
 
 export function ResizeHandle({ label, grip, className = '' }: { label: string; grip: ReturnType<typeof useResizable>['grip']; className?: string }) {
-  const title = '경계를 끌어서 크기 조절 · 방향키로 조절 · 두 번 클릭 또는 Home으로 원래 크기';
-  if (className === 'sidebar-resize') return <button type="button" className={`resize-handle ${className}`} aria-label={`${label} 크기 조절`} title={title} {...grip} />;
+  const title = t('경계를 끌어서 크기 조절 · 방향키로 조절 · 두 번 클릭 또는 Home으로 원래 크기', 'Drag the edge or use arrow keys to resize · Double-click or Home to reset');
+  if (className === 'sidebar-resize') return <button type="button" className={`resize-handle ${className}`} aria-label={t(`${label} 크기 조절`, `Resize ${label}`)} title={title} {...grip} />;
   return <>
-    {(['left', 'right', 'top', 'bottom'] as const).map(edge => <button key={edge} type="button"
+    {(['right', 'bottom'] as const).map(edge => <button key={edge} type="button"
       className={`resize-edge resize-edge-${edge}`} data-edge={edge}
-      aria-label={`${label} ${ { left: '왼쪽', right: '오른쪽', top: '위쪽', bottom: '아래쪽' }[edge]} 경계 크기 조절`}
+      aria-label={t(`${label} ${ { left: '왼쪽', right: '오른쪽', top: '위쪽', bottom: '아래쪽' }[edge]} 경계 크기 조절`, `Resize ${label} ${edge} edge`)}
       title={title} {...grip} />)}
-    <button type="button" className={`resize-handle ${className}`} aria-label={`${label} 크기 조절`}
+    <button type="button" className={`resize-handle ${className}`} aria-label={t(`${label} 크기 조절`, `Resize ${label}`)}
       title={title} {...grip}>◢</button>
   </>;
 }

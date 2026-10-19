@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any
 
@@ -64,15 +65,31 @@ def list_cameras() -> list[dict[str, Any]]:
     return out
 
 
+# 자동 선택 순서: homese → 17sa → FaceTime HD Camera.
+# 바꾸려면 ANYCONTROL_CAMERA_PREFER="이름1,이름2". 맞는 게 없으면 연속성 카메라 → 첫 카메라.
+CAMERA_PREFER = tuple(w.strip().lower() for w in os.environ.get('ANYCONTROL_CAMERA_PREFER', 'homese,17sa,facetime hd camera').split(',') if w.strip())
+
+
+def preferred_camera(normal: list[dict[str, Any]], exclude: tuple[str, ...] = ()) -> dict[str, Any] | None:
+    """exclude: 프레임이 오지 않아 건너뛸 카메라 unique_id (실행 중 폴백)."""
+    normal = [c for c in normal if c.get('unique_id') not in exclude] or normal
+    for word in CAMERA_PREFER:
+        hit = next((c for c in normal if word in str(c.get('name', '')).lower()), None)
+        if hit is not None:
+            return hit
+    return next((c for c in normal if c.get('is_continuity')), normal[0] if normal else None)
+
+
 def select_camera(cameras: list[dict[str, Any]], index: int = -1,
-                  device_id: str | None = None, desk_view: bool = False) -> dict[str, Any]:
+                  device_id: str | None = None, desk_view: bool = False,
+                  exclude: tuple[str, ...] = ()) -> dict[str, Any]:
     if device_id:
         selected = next((c for c in cameras if c['unique_id'] == device_id), None)
     elif index >= 0:
         selected = next((c for c in cameras if c['index'] == index), None)
     else:
         normal = [c for c in cameras if not c.get('is_desk_view')]
-        selected = next((c for c in normal if c['is_continuity']), normal[0] if normal else None)
+        selected = preferred_camera(normal, exclude)
         if desk_view and (selected is None or not selected.get('companion_id')):
             selected = next((c for c in cameras if c.get('is_desk_view')), None)
     if selected is None:

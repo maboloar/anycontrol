@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { resetAllSettings } from "../resetSettings";
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { DisplayControls } from './DisplayControls';
 import { Panel } from './Panel';
 
+vi.mock("../resetSettings", () => ({ resetAllSettings: vi.fn().mockResolvedValue(undefined) }));
 beforeEach(() => { localStorage.clear(); document.documentElement.style.fontSize = ''; });
 afterEach(cleanup);
 it('resets active and unmounted window sizes without clearing input settings', () => {
@@ -11,7 +13,7 @@ it('resets active and unmounted window sizes without clearing input settings', (
   localStorage.setItem('anycontrol.input.preference', 'keep');
   render(<><DisplayControls /><Panel title="설정">내용</Panel></>);
   expect(screen.getByRole('region', { name: '설정' }).style.width).toBe('300px');
-  fireEvent.click(screen.getByRole('button', { name: '화면 초기화' }));
+  fireEvent.click(screen.getByRole('button', { name: '배치 초기화' }));
   expect(screen.getByRole('region', { name: '설정' }).style.width).toBe('');
   expect(localStorage.getItem('anycontrol.panel.데모.size')).toBeNull();
   expect(localStorage.getItem('anycontrol.input.preference')).toBe('keep');
@@ -24,7 +26,16 @@ it('changes persistent font size and restores minimized panels with display defa
   expect(localStorage.getItem('anycontrol.font-size')).toBe('15');
   fireEvent.click(screen.getByRole('button', { name: '글씨 작게' }));
   expect(document.documentElement.style.fontSize).toBe('14px');
-  fireEvent.click(screen.getByRole('button', { name: '화면 초기화' }));
+  fireEvent.click(screen.getByRole('button', { name: '배치 초기화' }));
   expect(screen.getByRole('button', { name: '설정 최소화' })).toBeTruthy();
   expect(document.documentElement.style.fontSize).toBe('14px');
+});
+
+it('requires a second press before resetting every setting', async () => {
+  render(<DisplayControls />);
+  fireEvent.click(screen.getByRole('button', { name: '모든 세팅 초기화' }));
+  expect(resetAllSettings).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '정말 모든 세팅 초기화?' }));
+  expect(resetAllSettings).toHaveBeenCalledTimes(1);
+  await Promise.resolve();
 });

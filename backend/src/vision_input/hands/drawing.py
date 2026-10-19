@@ -104,6 +104,8 @@ class HandDrawing:
                 self.current = []
                 self.events.append({"type": "down"})
             self.current.append(self.point.copy())
+            if len(self.current) >= 2000:    # 아주 긴 획은 끊어 보낸다: 매 프레임 보내는 current 가 끝없이 커지지 않게
+                self._lift()
         else:
             self._lift()
 

@@ -1,6 +1,6 @@
 /** 시작 튜토리얼: 저장 키, 가리킬 영역 계산, 말풍선 카드 위치. (화면 그리기는 components/Tutorial.tsx) */
 
-export const TOUR_KEY = "anycontrol.tour.v1";
+export const TOUR_KEY = "anycontrol.tour.v3";   // 내용이 크게 바뀌면 올려서 한 번 다시 보여 준다
 
 /** 처음 여는 사람에게만 튜토리얼을 띄운다 (끝까지 보거나 건너뛰면 "done"). */
 export function tourSeen(): boolean {

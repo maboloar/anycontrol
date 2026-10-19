@@ -158,3 +158,13 @@ def test_vi_output_contract_visible_implies_pose():
         o = tr.step(img, i / 30)[1]
         assert (not o.state.visible) or o.pose is not None
         assert o.mask is None or o.mask.shape == (180, 320)
+
+
+def test_pose_kalman_scale_state_stays_bounded_when_scale_diverges():
+    """장면이 바뀌어 크기 추정이 발산해도 크기 로그 상태가 한계를 넘지 않는다 (거대 커널 → 메모리 폭증 방지)."""
+    from vision_input.tracking.kalman import LS_MAX, PoseKalman
+    kf = PoseKalman(100, 100, 50)
+    kf.x[6] = 1e6                       # 터무니없는 크기 속도
+    for _ in range(50):
+        kf.predict(0.5)
+    assert abs(kf.pose[2]) <= LS_MAX

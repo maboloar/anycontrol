@@ -44,3 +44,13 @@ it('drops a decoded bitmap from a closed connection', async () => {
   finish({ close } as unknown as ImageBitmap); await Promise.resolve();
   expect(close).toHaveBeenCalledTimes(1); expect(listener).not.toHaveBeenCalled();
 });
+
+it('tells the server this client is leaving when the page closes (beacon), once', () => {
+  const beacon = vi.fn().mockReturnValue(true);
+  vi.stubGlobal('navigator', { sendBeacon: beacon });
+  c.connect(); const ws = Socket.all[0]!; ws.open();
+  ws.onmessage?.({ data: JSON.stringify({ v: 1, type: 'hello', data: { version: '1', protocol: 1, client_id: 7 } }) });
+  c.close(); c.close();
+  expect(beacon).toHaveBeenCalledOnce();
+  expect(String(beacon.mock.calls[0]![0])).toBe('http://localhost/api/bye');
+});

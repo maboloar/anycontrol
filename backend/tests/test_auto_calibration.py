@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from vision_input.auto_calibration import AutoCalibration, CalibrationError
+from vision_input.auto_calibration import AutoCalibration, CalibrationError, delta
 from vision_input.capture.slot import Frame
 from vision_input.io.mouse import MouseSettings
 from vision_input.io.touchpad import RelativeTouchpad, TouchSurface
@@ -20,6 +20,9 @@ from .test_pen import pen_frame, pen_mask, _out
 
 
 def session(kind='hand', surface=None, overhead=False, **settings):
+    if kind == 'hand':
+        settings.setdefault('hand_control', 'depth')
+        settings.setdefault('hand_click_style', 'pinch')  # finger 방식은 test_finger_calibration 에서 따로 검증
     return AutoCalibration(kind, None if kind == 'hand' else 1, MouseSettings(**settings), surface, overhead, 0.)
 
 
@@ -30,7 +33,8 @@ def samples(key, duration=3., pen=False, overhead=False, mirror=False, plane=Fal
         down = i % 20 in range(5, 13)
         a = dict(t=float(t), x=.5, y=.6, log_scale=math.log(15) if pen else 0., frame_h=720,
                  pinch=1., middle=1.2, scroll_pose=False, scroll=3., scroll_x=.5, scroll_y=.6,
-                 log_knuckle=0., touch=.2, middle_touch=.2, gap=.6, raw_y=350., width=15., length=80., sharp=80.)
+                 log_knuckle=0., touch=.2, middle_touch=.2, gap=.6,
+                 h_index=.9, h_middle=.9, gap_index=.8, gap_middle=.8, raw_y=350., width=15., length=80., sharp=80.)
         if key in ('right', 'left'):
             a['x'] += .15 * motion * (1 if key == 'right' else -1) * (-1 if mirror else 1)
         if key in ('near', 'far'):
@@ -47,6 +51,10 @@ def samples(key, duration=3., pen=False, overhead=False, mirror=False, plane=Fal
             a['touch'] = -.4
         if key in ('click', 'right_click', 'gesture_click') and (not pen or key != 'click'):
             a['pinch' if key in ('click', 'gesture_click') else 'middle'] = .08 if down else 1.
+        if key == 'click':
+            a.update(h_middle=.2 if down else .9, gap_middle=.02 if down else .8)
+        if key == 'right_click':
+            a.update(h_index=.2 if down else .9, gap_index=.02 if down else .8)
         if key == 'scroll':
             a.update(scroll_pose=True, scroll=3. + .5 * motion, scroll_y=.6 + .15 * motion,
                      log_knuckle=-.18 * motion)
@@ -77,9 +85,42 @@ def samples(key, duration=3., pen=False, overhead=False, mirror=False, plane=Fal
     return out
 
 
+PART_DURATION = {'right': 4.5, 'left': 4.5, 'near': 4.5, 'far': 4.5, 'click': 6., 'right_click': 6.,
+                 'touch_near': 2., 'touch_far': 2., 'touch_side': 2., 'lift_near': 2., 'lift_far': 2.}
+
+
+def step_samples(step, pen=False, overhead=False, mirror=False):
+    """안내 한 번에 얻는 관측. 합성 단계는 한 번의 연속 동작을 흉내 낸다."""
+    if not step.parts:
+        return samples(step.key, step.duration, pen, overhead, mirror)
+    if step.split == 'extrema':
+        # 중앙 → 한쪽 끝(멈춤) → 중앙 → 반대쪽 끝(멈춤)
+        out = []
+        for i, t in enumerate(np.linspace(.01, step.duration, 90)):
+            u = t / step.duration
+            m = np.interp(u, [0, .1, .3, .4, .55, .7, .85, 1], [0, 0, 1, 1, 0, -1, -1, -1])
+            a = samples('rest', 1., pen, overhead, mirror)[0]
+            a = dict(a, t=float(t))
+            if step.key == 'lr':
+                a['x'] += .15 * m * (-1 if mirror else 1)
+            else:
+                a['log_scale'] += .18 * m
+                a['y'] += .15 * m
+            out.append(a)
+        return out
+    out, offset = [], 0.
+    for part in step.parts:
+        d = PART_DURATION[part]
+        for a in samples(part, d, pen, overhead, mirror):
+            out.append(dict(a, t=a['t'] + offset))
+        offset += d
+    return out
+
+
 def populated(s, mirror=False):
     for step in s.steps:
-        s.data[step.key] = samples(step.key, step.duration, s.kind == 'pen', s.overhead, mirror)
+        for part in s.parts_of(step):
+            s.data[part] = samples(part, PART_DURATION.get(part, step.duration), s.kind == 'pen', s.overhead, mirror)
     return s
 
 
@@ -90,7 +131,7 @@ def test_guided_sessions_reach_review_using_observed_motion_clicks_and_release(k
     for step in s.steps:
         assert s.phase == 'ready' and s.steps[s.index].key == step.key
         s.record(step.key, t)
-        for a in samples(step.key, step.duration):
+        for a in step_samples(step):
             a['t'] += t
             s.observe(a, a['t'])
         t += step.duration + 1
@@ -100,11 +141,15 @@ def test_guided_sessions_reach_review_using_observed_motion_clicks_and_release(k
     assert 1 < patch['depth_sensitivity'] < 2
     assert not patch['invert_y'] and not patch['mirror']
     assert .0005 <= patch['depth_deadzone'] < .01
-    if s.needs_hands:
+    if s.needs_hands and s.finger_style:
+        assert .3 <= patch['finger_press'] <= .85
+        assert 'pinch_on' not in patch and 'scroll_gain' not in patch
+        assert [st.key for st in s.steps if st.key in ('scroll', 'gesture_click') or st.key.startswith('tap_')] == []
+        if kind == 'object':
+            assert .05 <= patch['object_tap_distance'] <= .4
+    elif s.needs_hands:
         assert .15 < patch['pinch_on'] < .5
         assert patch['scroll_gain'] == pytest.approx(12)
-    if kind == 'object' and s.needs_hands:
-        assert .03 < patch['object_tap_distance'] < .25
     # 적용 전까지 원래 설정은 그대로 유지된다.
     assert s.settings.depth_sensitivity == 1.5
 
@@ -165,12 +210,23 @@ def test_desk_view_hand_contact_threshold_matches_runtime_depth_comparison():
 @pytest.mark.parametrize('key,edit', [
     ('left', lambda a: a.update(x=.5 + abs(a['x'] - .5))),
     ('far', lambda a: a.update(log_scale=abs(a['log_scale']), y=.6)),
-    ('click', lambda a: a.update(pinch=.9)),
-    ('right_click', lambda a: a.update(pinch=a['middle'])),
-    ('tap_click', lambda a: a.update(gap=.02)),
 ])
 def test_ambiguous_direction_missing_releases_or_conflicting_fingers_require_retry(key, edit):
     s = populated(session('object'))
+    assert not s.finger_style   # 물체 마우스는 손 클릭이 없다 (이동만 보정)
+    for a in s.data[key]:
+        edit(a)
+    with pytest.raises(CalibrationError) as exc:
+        s.solve()
+    assert exc.value.step == key
+
+
+@pytest.mark.parametrize('key,edit', [
+    ('click', lambda a: a.update(pinch=.9)),
+    ('right_click', lambda a: a.update(pinch=a['middle'])),
+])
+def test_pinch_style_conflicting_fingers_require_retry(key, edit):
+    s = populated(session('hand'))
     for a in s.data[key]:
         edit(a)
     with pytest.raises(CalibrationError) as exc:
@@ -209,12 +265,12 @@ def test_retry_redirects_only_failed_measurement_and_reuses_other_completed_step
     for a in s.data['left']:
         a['x'] = .5 + abs(a['x'] - .5)
     s.index = len(s.steps) - 1
-    s.buffer = samples('precision', 4.)
-    s.finish(4.)
-    assert s.phase == 'ready' and s.steps[s.index].key == 'left'
-    assert len(s.data) == len(s.steps) - 1
-    s.buffer = samples('left')
-    s.finish(8.)
+    s.buffer = step_samples(s.steps[-1])
+    s.finish(12.)
+    assert s.phase == 'ready' and s.steps[s.index].key == 'lr'  # 실패한 부분이 속한 단계만 다시
+    assert s.state()['completed'] == len(s.steps) - 1
+    s.buffer = step_samples(s.steps[s.index])
+    s.finish(21.)
     assert s.phase == 'review' and s.result
 
 
@@ -286,7 +342,7 @@ def test_auto_calibration_api_guards_sessions_live_source_apply_and_manual_chang
         assert c.post('/api/auto-calibration/skip', json={**body, 'step_key': 'wrong'}).status_code == 409
         skipped = c.post('/api/auto-calibration/skip', json={**body, 'step_key': 'rest'}).json()
         assert skipped['phase'] == 'ready' and skipped['skipped'][0]['key'] == 'rest'
-        assert skipped['step']['key'] == 'right'
+        assert skipped['step']['key'] == 'lr'
         assert c.post('/api/auto-calibration/cancel', json=body).json()['phase'] == 'cancelled'
         assert c.get('/api/mouse').json()['settings'] == before
         c.post('/api/auto-calibration/start', json={'kind': 'object', 'object_id': oid})
@@ -299,13 +355,19 @@ def test_auto_calibration_api_guards_sessions_live_source_apply_and_manual_chang
         assert c.get('/api/auto-calibration').json()['phase'] == 'cancelled'
 
 
-def test_pen_mouse_with_hand_clicks_calibrates_both_pen_contact_and_hand_gestures():
+def test_pen_mouse_calibrates_pen_contact_without_hand_gestures():
     s = populated(session('pen', mode='object', object_id=1, hand_clicks=True))
-    assert s.needs_hands
-    assert 'gesture_click' in [step.key for step in s.steps]
+    assert not s.needs_hands
+    assert 'gesture_click' not in [step.key for step in s.steps]
     result = s.solve()
-    assert 'pinch_on' in result['mouse'] and 'scroll_gain' in result['mouse']
+    assert 'pinch_on' not in result['mouse'] and 'finger_press' not in result['mouse']
     assert 'touch_on' in result['pen']
+
+
+def test_finger_style_calibration_measures_press_ratio_and_touch_distance():
+    h = populated(session('hand', hand_click_style='finger'))
+    r = h.solve()['mouse']
+    assert 'finger_press' in r and 'object_tap_distance' not in r  # 맨손은 물체가 없다
 
 
 def test_pen_model_and_slider_values_change_only_after_apply():
@@ -354,14 +416,14 @@ def test_live_feedback_detects_motion_click_release_and_missing_target():
     s.observe(samples('rest')[0], .2)
     assert s.state()['feedback']['level'] == 'good'
     s.data['rest'] = samples('rest')
-    s.index = next(i for i, step in enumerate(s.steps) if step.key == 'click')
-    s.record('click', 10.)
-    for a in samples('click', 6.)[:55]:
+    s.index = next(i for i, step in enumerate(s.steps) if step.key == 'clicks')
+    s.record('clicks', 10.)
+    for a in step_samples(s.steps[s.index])[:115]:
         a['t'] += 10.
         s.observe(a, a['t'])
     f = s.state()['feedback']
-    assert f['cycles'] >= 2 and '놓기' in f['message']
-    s.observe(None, 15.6)
+    assert f['cycles'] >= 2 and '왼쪽' in f['message'] and '오른쪽' in f['message']
+    s.observe(None, 25.6)
     assert s.state()['feedback']['level'] == 'waiting'
 
 
@@ -374,7 +436,7 @@ def test_missing_observations_extend_measurement_without_failing_early():
     for a in samples('rest', 2.):
         a['t'] += 2.
         s.observe(a, a['t'])
-    assert s.phase == 'ready' and s.steps[s.index].key == 'right'
+    assert s.phase == 'ready' and s.steps[s.index].key == 'lr'
 
 
 def test_stale_observations_do_not_count_as_measurement_or_ready_feedback():
@@ -407,37 +469,11 @@ def test_object_motion_does_not_require_hands_but_gesture_steps_do():
     p.frame_size = (1280, 720)
     p.objects[1] = SimpleNamespace(id=1, out=SimpleNamespace(state=TrackState.TRACKING,
         confidence=.9, debug={}, box=(400, 300, 600, 500), pose=SimpleNamespace(cx=500, cy=400, scale=1.)))
-    p.auto_calibration = session('object', hand_clicks=True)
+    p.auto_calibration = session('object', hand_clicks=True)   # 예전 설정이 켜져 와도 손 단계가 없다
     s = p.auto_calibration
-    s.index = next(i for i, step in enumerate(s.steps) if step.key == 'right')
+    assert 'clicks' not in [step.key for step in s.steps]
+    s.index = next(i for i, step in enumerate(s.steps) if step.key == 'lr')
     assert p._auto_sample(None, 1.) is not None
-    s.index = next(i for i, step in enumerate(s.steps) if step.key == 'click')
-    assert p._auto_sample(None, 1.) is None
-    assert '손' in s.observation_issue
-
-
-def test_repeated_object_tap_failure_can_be_skipped_without_changing_tap_threshold():
-    s = populated(session('object', object_tap_distance=.12))
-    s.index = next(i for i, step in enumerate(s.steps) if step.key == 'tap_touch')
-    s.data.pop('tap_touch')
-    s.data.pop('tap_click')
-    for attempt in range(2):
-        s.record('tap_touch', attempt * 20.)
-        s.buffer = samples('tap_lift', 2.)  # 접촉하지 않은 표본을 접촉 단계에 제출
-        s.finish(attempt * 20. + 2.)
-        assert s.phase == 'ready' and s.steps[s.index].key == 'tap_touch'
-        assert s.state()['attempts_failed'] == attempt + 1
-    s.skip('tap_touch', 43.)
-    assert s.steps[s.index].key == 'tap_click'
-    s.record('tap_click', 44.)
-    s.buffer = samples('tap_click', 6.)
-    s.finish(50.)
-    assert s.phase == 'review'
-    assert 'depth_sensitivity' in s.result['mouse']
-    assert 'object_tap_distance' not in s.result['mouse']
-    assert s.settings.object_tap_distance == .12
-    assert s.state()['skipped'][0]['key'] == 'tap_touch'
-    assert any('건너뛴 검사' in note for note in s.result['notes'])
 
 
 @pytest.mark.parametrize('kind,options', [('hand', {}), ('hand', {'hand_control': 'touchpad'}), ('object', {}), ('pen', {})])
@@ -445,13 +481,14 @@ def test_each_skipped_step_preserves_missing_measurements_instead_of_crashing(ki
     baseline = session(kind, **options)
     for step in baseline.steps:
         s = populated(session(kind, **options))
-        s.data.pop(step.key)
+        for part in s.parts_of(step):
+            s.data.pop(part)
         s.skipped[step.key] = '인식 실패'
         result = s.solve()
         assert result['notes']
-        if step.key in ('tap_lift', 'tap_touch', 'tap_click'):
-            assert 'object_tap_distance' not in result['mouse']
-        if kind == 'pen' and step.key.startswith(('touch_', 'lift_')):
+        if kind == 'object' and step.key == 'clicks':
+            assert 'object_tap_distance' not in result['mouse'] and 'finger_press' not in result['mouse']
+        if kind == 'pen' and step.key in ('touch', 'lift'):
             assert s.pen_surface is None and s.pen_contact is None
             assert 'touch_on' not in result['pen']
 
@@ -470,17 +507,82 @@ def test_all_steps_can_be_skipped_and_a_skipped_step_can_be_retested():
         s.skip('rest', 3.)  # stale browser action must not skip a different step
 
 
-def test_partial_apply_keeps_unmeasured_object_tap_setting():
+def test_partial_apply_keeps_unmeasured_touch_distance_setting():
     p = VisionProcessor(None)
     p.hands = None
     original = MouseSettings(mode='object', object_id=1, object_tap_distance=.12)
     p.mouse.configure(original)
     s = populated(session('object', mode='object', object_id=1, object_tap_distance=.12))
-    s.data.pop('tap_touch')
-    s.skipped['tap_touch'] = '인식 실패'
     s.result, s.phase = s.solve(), 'review'
     p.auto_calibration = s
     response = p.apply_auto_calibration(s.id)
     assert response['calibration']['phase'] == 'complete'
     assert p.mouse.settings.object_tap_distance == original.object_tap_distance
     assert p.mouse.settings.depth_sensitivity != original.depth_sensitivity
+
+
+def test_wizard_has_fewer_steps_than_before():
+    # 이전: 맨손·물체 8단계(펜 13단계). 이제 같은 동작을 한 번에 측정한다.
+    assert [st.key for st in session('object').steps] == ['rest', 'lr', 'nf']
+    assert [st.key for st in session('object', hand_clicks=False).steps] == ['rest', 'lr', 'nf']
+    assert [st.key for st in session('pen').steps] == ['rest', 'touch', 'lift', 'lr', 'nf', 'click']
+    assert len(session('hand').steps) <= 5 and 'precision' not in [st.key for st in session('hand').steps]
+
+
+def test_one_sided_or_too_small_motion_is_rejected_with_the_part_that_failed():
+    s = session('object')
+    one_sided = step_samples(s.steps[1])
+    for a in one_sided:
+        a['x'] = .5 + abs(a['x'] - .5)  # 왼쪽으로 가지 않음
+    s.index = 1
+    s.buffer = one_sided
+    s.finish(9.)
+    assert s.phase == 'ready' and s.steps[s.index].key == 'lr' and s.error
+    assert 'right' not in s.data and 'left' not in s.data  # 실패하면 일부만 저장하지 않는다
+
+
+@pytest.mark.parametrize('mirror', [False, True])
+def test_merged_motion_steps_split_into_right_left_near_far_and_detect_mirror(mirror):
+    s = session('object', hand_clicks=False)
+    for step in s.steps:
+        s.index = s.steps.index(step)
+        s.buffer = step_samples(step, mirror=mirror)
+        s.finish(100.)
+        assert s.phase in ('ready', 'review'), s.error
+    assert s.phase == 'review'
+    assert {'right', 'left', 'near', 'far'} <= set(s.data)
+    assert s.result['mouse']['mirror'] is mirror
+
+
+def test_quick_movement_calibration_keeps_click_settings_and_needs_no_hand_for_objects():
+    s = AutoCalibration('object', 1, MouseSettings(hand_clicks=True, pinch_on=.37), None, False, 0., movement_only=True)
+    assert [step.key for step in s.steps] == ['rest', 'lr', 'nf']
+    assert not s.needs_hands and not s.step_needs_hands
+    t = 0.
+    for step in s.steps:
+        s.record(step.key, t)
+        for sample in step_samples(step):
+            sample['t'] += t
+            s.observe(sample, sample['t'])
+        t += step.duration + 1
+    assert s.phase == 'review', s.error
+    assert 'pinch_on' not in s.result['mouse'] and 'finger_press' not in s.result['mouse']
+
+
+def test_round_trip_can_reverse_without_crossing_original_start_or_a_center():
+    s = session('object', hand_clicks=False)
+    step = next(st for st in s.steps if st.key == 'lr')
+    rows = samples('rest', duration=step.duration)
+    for i, a in enumerate(rows):
+        phase = i / (len(rows) - 1)
+        # Start at .65, visit .85, end at .72: reverse without ever reaching the start again.
+        a['x'] = .65 + .2 * min(phase / .45, 1) if phase <= .55 else .85 - .13 * min((phase - .55) / .35, 1)
+    parts = s._validate_step(step, rows)
+    assert delta(parts['right'], 'x') > .025 and delta(parts['left'], 'x') < -.025
+    assert min(a['x'] for a in parts['left']) > rows[0]['x']
+
+
+def test_quick_hand_calibration_still_requests_hand_worker_without_gesture_steps():
+    s = AutoCalibration('hand', None, MouseSettings(mode='off'), None, False, 0., movement_only=True)
+    assert s.needs_hands and s.step_needs_hands
+    assert [step.key for step in s.steps] == ['rest', 'lr', 'nf']

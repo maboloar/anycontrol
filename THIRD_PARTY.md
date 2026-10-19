@@ -2,6 +2,7 @@
 
 - **EfficientTAM**: [upstream](https://github.com/yformer/EfficientTAM). Vendored source in `third_party/EfficientTAM/`, runtime checkpoint `models/efficienttam_ti_512x512.pt`. Apache 2.0 license retained in [LICENSE](third_party/EfficientTAM/LICENSE).
 - **MediaPipe**: [upstream](https://developers.google.com/mediapipe). Runtime hand model `models/hand_landmarker.task`. Apache 2.0 license in [mediapipe-LICENSE](packaging/licenses/mediapipe-LICENSE).
+- **Depth Anything V2 Small (Core ML)**: [upstream](https://github.com/DepthAnything/Depth-Anything-V2), Apple Core ML conversion [apple/coreml-depth-anything-v2-small](https://huggingface.co/apple/coreml-depth-anything-v2-small). Apache 2.0. Bundled as `models/DepthAnythingV2SmallF16.mlpackage` (F16, SHA-256 of `weight.bin`: `fa60d9b6a155734f59029ebb882fd54e549bfaee3539c1a9cbd2cbbab64a0fed`). Used for the pen floor tilt and the object-mouse depth. Model card: `models/DepthAnythingV2SmallF16.README.md`.
 - **Apple Vision**: macOS system framework; no separate bundled model.
 - **React, React DOM, Zustand**: frontend libraries; license texts in `packaging/licenses/`.
 - **uv 0.12.19**: [upstream](https://github.com/astral-sh/uv). Bundled installer binary; Apache 2.0 and MIT license texts in `packaging/licenses/`.

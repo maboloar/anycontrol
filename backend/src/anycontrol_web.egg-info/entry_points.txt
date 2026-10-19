@@ -1,0 +1,2 @@
+[console_scripts]
+vision-input = vision_input.__main__:main

@@ -1,0 +1,7 @@
+{
+  "video": "samples/pen_test.mov",
+  "labels": "bench/pen/labels/pen_test.json",
+  "width": 1280,
+  "tier1": "sim",
+  "register": {"frame": 130, "tip": [850, 415], "tail": [670, 215]}
+}

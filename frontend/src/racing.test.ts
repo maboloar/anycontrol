@@ -19,10 +19,10 @@ describe("racing", () => {
   });
 });
 
-import { newRace, stepRace } from './racing';
+import { FINISH, newDuel, newRace, stepDuel, stepRace } from './racing';
 it('spawns obstacles with a free lane and awards each coin only once', () => {
   let g = newRace(); g.car.dist = 20;
-  g = stepRace(g, 0, 0, 0, .02, () => .4);
+  g = stepRace(g, 0, 0, 0, .02);
   expect(g.items.filter(i => i.kind === 'barrier')).toHaveLength(1);
   expect(g.items[0]!.x).not.toBe(g.items[1]!.x);
   g.items = [{ id: 9, x: 0, ahead: 0, kind: 'coin' }];
@@ -41,4 +41,21 @@ it('collision grants a brief recovery window and the third hit ends the run', ()
   expect(g.over).toBe(true);
   expect(stepRace(g, 1, 1, 0, .05)).toBe(g);
   expect(newRace().health).toBe(3);
+});
+
+it('two players race the same road and the first to the finish wins', () => {
+  let d = newDuel(42);
+  d = stepDuel(d, [0, 0], .05);
+  expect(d.p[0].seed).toBe(d.p[1].seed);
+  d.p[0].car.dist = FINISH - 0.01; d.p[0].car.speed = 2;
+  d = stepDuel(d, [0, 0], .05);
+  expect(d.over).toBe(true); expect(d.winner).toBe(0);
+});
+it('a boost pad raises the top speed for a moment', () => {
+  let g = newRace(); g.car.speed = 2.9;
+  g.items = [{ id: 1, x: 0, ahead: 3, kind: 'boost' }];
+  g = stepRace(g, 0, 1, 0, .05);
+  expect(g.boost).toBeGreaterThan(1);
+  for (let i = 0; i < 10; i++) { g.items = []; g = stepRace(g, 0, 1, 0, .05); }
+  expect(g.car.speed).toBeGreaterThan(3);
 });

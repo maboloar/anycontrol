@@ -83,6 +83,7 @@ def make_router(engine: Engine, processor: VisionProcessor, store: ProfileStore)
     async def save_profile(name: str, p: Profile) -> dict[str, Any]:
         try:
             p = Profile.model_validate({**p.model_dump(), "name": name})
+            p = await on_engine(lambda: processor.portable_profile(p))
             await asyncio.to_thread(store.save, p)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc

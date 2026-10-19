@@ -80,3 +80,45 @@ class PoseSmoother:
         size = max(size, 1.0)
         return (self.fx(cx, t, size), self.fy(cy, t, size), self.fs(ls, t),
                 self.fa(angle, t), math.exp(self.fr(math.log(max(aspect, 1e-3)), t)))
+class SpikeEma:
+    """실시간 지수이동평균(EMA) + 튐 억제. 한두 프레임만 확 튀는 값이 출력에 그대로 나가지 않게 한다.
+
+    - 보통: 시간상수 tau 의 EMA (프레임 간격이 달라도 같은 느낌: a = 1 - exp(-dt/tau)).
+    - 튐 의심: 새 값이 현재 출력에서 '평소 변화량 x spike_k' 보다 멀면 아주 느린 시간상수(spike_tau)로만 따라간다.
+      그 상태가 confirm_s 초 넘게 이어지면 진짜 이동으로 보고 보통 EMA 로 따라잡는다 (영영 못 따라가는 일이 없다).
+    scale 은 값의 단위(이 값 미만의 변화는 튐으로 보지 않는 하한)다. 평소 변화량은 정상 프레임의 |변화|의 느린 평균."""
+
+    def __init__(self, tau: float = 0.08, spike_k: float = 5.0, spike_tau: float = 0.8, confirm_s: float = 0.18) -> None:
+        self.tau, self.spike_k, self.spike_tau, self.confirm_s = tau, spike_k, spike_tau, confirm_s
+        self.reset()
+
+    def reset(self) -> None:
+        self.y: float | None = None
+        self.t: float | None = None
+        self.typical = 0.0
+        self.spike_since: float | None = None
+        self.spikes = 0
+
+    def __call__(self, x: float, t: float, scale: float = 1.0) -> float:
+        if self.y is None or self.t is None:
+            self.y, self.t = x, t
+            return x
+        dt = t - self.t
+        if dt <= 0:
+            return self.y
+        dt = min(dt, 0.5)
+        d = abs(x - self.y)
+        limit = self.spike_k * max(self.typical, 0.5 * scale)
+        spike = d > limit
+        if spike:
+            if self.spike_since is None:
+                self.spike_since, self.spikes = t, self.spikes + 1
+            tau = self.tau if t - self.spike_since >= self.confirm_s else self.spike_tau
+        else:
+            self.spike_since = None
+            tau = self.tau
+            self.typical = d if self.typical == 0.0 else 0.9 * self.typical + 0.1 * d
+        a = 1.0 - math.exp(-dt / max(tau, 1e-6))
+        self.y += a * (x - self.y)
+        self.t = t
+        return self.y

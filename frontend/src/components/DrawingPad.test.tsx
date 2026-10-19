@@ -53,7 +53,7 @@ it("lets the user draw without registering a pen and stops tracking on mode exit
   expect(screen.getByText("맞댐 (그리는 중)")).toBeTruthy();
   state({ contact: false, point: [.2, .3] });
   expect(screen.getByText("떼어 있음")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /^펜$/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^펜 Beta$/ }));
   await waitFor(() => expect(putHandDrawing).toHaveBeenLastCalledWith(false));
 });
 
@@ -117,4 +117,23 @@ it('shows the hovering pen in stroke coordinates, toggles it, and clears a lost 
   fireEvent.click(screen.getByRole('checkbox', { name: '펜촉·검지 위치 십자 표시' }));
   ctx.lineTo.mockClear(); emit(null, true);
   expect(ctx.lineTo).not.toHaveBeenCalled();
+});
+
+it("shows the floor-contact checkbox (default method) for everyone and switches to the legacy method", async () => {
+  const pen = { id: 7, name: "펜", kind: "pen", color: "#fff", state: "tracking", confidence: 1, axes: {}, texture: 0, contrast: 0, warnings: [],
+    candidates: 1, candidate_index: 0, box: null, contour: [], debug: {} } as unknown as ObjectInfo;
+  useApp.setState({ objects: [pen], selectedId: 7, devMode: false });
+  render(<DrawingPad />);
+  const box = screen.getByRole("checkbox", { name: /바닥 기하 접촉 판정/ }) as HTMLInputElement;
+  expect(box.checked).toBe(true);
+  expect(box.closest("label")?.className ?? "").not.toContain("dev-check");
+});
+
+it("offers the depth-model tilt as an on-by-default option and sends the choice", async () => {
+  const pen = { id: 7, name: "펜", kind: "pen", color: "#fff", state: "tracking", confidence: 1, axes: {}, texture: 0, contrast: 0, warnings: [],
+    candidates: 1, candidate_index: 0, box: null, contour: [], debug: {} } as unknown as ObjectInfo;
+  useApp.setState({ objects: [pen], selectedId: 7 });
+  render(<DrawingPad />);
+  const box = screen.getByRole("checkbox", { name: /책상 기울기를 깊이 모델로/ }) as HTMLInputElement;
+  expect(box.checked).toBe(true);
 });

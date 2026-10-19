@@ -1,0 +1,108 @@
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+sequence                             success    robust   fp_rate   hijacks recovery_ center_er scale_err    wobble occl_jump    ms_p95
+eval/textured-grasp                    0.425         1         0         0        14     0.058     0.044     0.002     0.003    17.690
+eval/textured-pull                         1         1         -         0         -     0.062     0.051     0.000         -    19.310
+eval/textured-rotate                       1         1         -         0         -     0.028     0.119     0.000         -    16.460
+eval/textured-fast                         1         1         -         0         -     0.117     0.030     0.009         -    17.520
+eval/textured-full_occlusion           0.484     0.484         0         0        63     0.041     0.016     0.000     0.001    17.440
+eval/textured-exit                     0.982     0.982     0.053         0         2     0.080     0.019     0.006         -    17.680
+eval/textured-twin                     0.832         1         -        26         -     0.043     0.048     0.028         -    17.080
+eval/textured-lighting                     1         1         -         0         -     0.050     0.105     0.000         -    18.790
+eval/textured-reflection                   1         1         -         0         -     0.035     0.021     0.000         -    16.970
+eval/textured-clutter                      1         1         -         0         -     0.057     0.025     0.001         -    16.680
+eval/dark-grasp                        0.691         1         -         0         -     0.074     0.116     0.003     0.002    18.260
+eval/dark-pull                             1         1         -         0         -     0.044     0.036     0.000         -    19.870
+eval/dark-rotate                           1         1         -         0         -     0.035     0.068     0.000         -    19.490
+eval/dark-fast                             1         1         -         0         -     0.076     0.011     0.009         -    18.680
+eval/dark-full_occlusion               0.976     0.976         0         0         3     0.028     0.001     0.000     0.000    17.710
+eval/dark-exit                         0.973     0.973     0.050         0         3     0.060     0.005     0.005         -    16.720
+eval/dark-twin                         0.765         1         -        36         -     0.073     0.029     0.024         -    19.240
+eval/dark-lighting                         1         1         -         0         -     0.037     0.005     0.000         -    17.570
+eval/dark-reflection                       1         1         -         0         -     0.042     0.085     0.000         -    16.370
+eval/dark-clutter                          1         1         -         0         -     0.026     0.001     0.000         -    18.410
+eval/light-grasp                           1         1         0         0         0     0.094     0.182     0.004     0.013    18.100
+eval/light-pull                            1         1         -         0         -     0.040     0.012     0.000         -    19.690
+eval/light-rotate                          1         1         -         0         -     0.035     0.114     0.001         -    17.320
+eval/light-fast                        0.966         1         -         0         -     0.211     0.037     0.033         -        18
+eval/light-full_occlusion              0.488     0.488     0.607         0        62     0.038     0.022     0.004     0.022    20.110
+eval/light-exit                        0.935     0.972     0.049         0         7     0.042     0.007     0.016         -    16.980
+eval/light-twin                        0.832     0.846         -         4         -     0.089     0.014     0.013         -    17.160
+eval/light-lighting                        1         1         -         0         -     0.037     0.004     0.000         -    18.860
+eval/light-reflection                      1         1         -         0         -     0.038     0.004     0.001         -    19.290
+eval/light-clutter                     0.886     0.906         -         0         -     0.125     0.024     0.009         -    19.240
+eval/pen-grasp                             1         1         -         0         -     0.204     0.121     0.006     0.060    18.070
+eval/pen-pull                          0.973         1         -         0         -     0.192     0.137     0.017         -    16.740
+eval/pen-rotate                        0.799         1         -         0         -     0.049     0.105     0.003         -    19.660
+eval/pen-fast                          0.396     0.597         -         0         -     0.482     0.190     0.206         -    20.240
+eval/pen-full_occlusion                0.983     0.983         0         0         2     0.274     0.309     0.009         0    17.280
+eval/pen-exit                          0.717     0.974     0.028         0         6     0.225     0.088     0.134         -    16.870
+eval/pen-twin                          0.799         1         -         0         -     0.260     0.254     0.091         -    18.440
+eval/pen-lighting                          1         1         -         0         -     0.036     0.018     0.001         -    18.140
+eval/pen-reflection                        1         1         -         0         -     0.050     0.013     0.001         -    17.890
+eval/pen-clutter                           1         1         -         0         -     0.045     0.024     0.001         -    17.660
+eval/glass-grasp                       0.248     0.987         -         0         -     0.109     0.109     0.019     0.012    21.430
+eval/glass-pull                        0.765         1         -         0         -     0.028     0.011     0.000         -    22.670
+eval/glass-rotate                          1         1         -         0         -     0.032     0.078     0.001         -    19.150
+eval/glass-fast                        0.960         1         -         0         -     0.121     0.008     0.022         -    17.670
+eval/glass-full_occlusion              0.845     0.845         0         0         0     0.208     0.230     0.030     0.001    20.300
+eval/glass-exit                        0.949     0.966     0.031         0         4     0.103     0.016     0.009         -    19.810
+eval/glass-twin                        0.503     0.993         -        73         -     0.065     0.067     0.004         -    17.680
+eval/glass-lighting                        1         1         -         0         -     0.034     0.097     0.000         -    17.960
+eval/glass-reflection                      1         1         -         0         -     0.037     0.009     0.000         -    17.470
+eval/glass-clutter                         1         1         -         0         -     0.043     0.026     0.001         -    19.390
+--------------------------------------------------------------------------------------------------------------------------------------
+MEAN                                   0.883     0.959     0.068       139    13.833     0.088     0.063     0.015     0.011    18.344
+(50 sequences, 184.8s)

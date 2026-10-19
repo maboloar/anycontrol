@@ -49,10 +49,12 @@ it('drags panel boundaries along one axis and preserves contents and saved dimen
   fireEvent.pointerMove(bottom, { clientX: 160, clientY: 280 });
   fireEvent.pointerUp(bottom);
   expect(panel.style.width).toBe('300px'); expect(panel.style.height).toBe('290px');
-  const left = screen.getByRole('button', { name: '설정 왼쪽 경계 크기 조절' });
-  fireEvent.pointerDown(left, { button: 0, clientX: 100, clientY: 200 });
-  fireEvent.pointerMove(left, { clientX: 50, clientY: 300 });
-  fireEvent.pointerUp(left);
+  expect(screen.queryByRole('button', { name: '설정 왼쪽 경계 크기 조절' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '설정 위쪽 경계 크기 조절' })).toBeNull();
+  const right = screen.getByRole('button', { name: '설정 오른쪽 경계 크기 조절' });
+  fireEvent.pointerDown(right, { button: 0, clientX: 100, clientY: 200 });
+  fireEvent.pointerMove(right, { clientX: 150, clientY: 300 });
+  fireEvent.pointerUp(right);
   expect(panel.style.width).toBe('350px'); expect(panel.style.height).toBe('210px');
   expect(JSON.parse(localStorage.getItem('anycontrol.panel.설정.size')!)).toEqual({ width: 350, height: 210 });
   expect(screen.getByRole('button', { name: '내용 1' })).toBeTruthy();

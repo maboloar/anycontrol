@@ -10,6 +10,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from .gamepad import gamepad_profile
 from .schema import (
     GAMEPAD_AXES,
     GAMEPAD_BUTTONS,
@@ -18,11 +19,13 @@ from .schema import (
     GamepadButtonOutput,
     HandInput,
     KeyOutput,
+    ControlOutput,
     Mapping,
     MouseOutput,
     ObjectAxisInput,
     ObjectVisibleInput,
     PenContactInput,
+    ObjectTouchInput,
     Profile,
     Transform,
     output_kind,
@@ -36,13 +39,14 @@ class ObjectSnap:
     visible: bool
     axes: dict[str, float | None]
     pen_contact: bool | None = None
+    touched: bool | None = None     # 손가락이 닿음 (터치 입력을 쓸 때만, 아니면 None)
 
 
 @dataclass
 class InputSnapshot:
     t: float
     objects: list[ObjectSnap] = field(default_factory=list)
-    hand: dict[str, bool] | None = None      # {"pinch": bool, "pinch_middle": bool} 또는 손 없음(None)
+    hand: dict[str, bool | float] | None = None      # {"pinch": bool, "pinch_middle": bool} 또는 손 없음(None)
 
     def find(self, ref: str) -> ObjectSnap | None:
         if ref.startswith("#"):
@@ -62,11 +66,13 @@ class ControllerState:
     mouse_move: tuple[float, float] = (0.0, 0.0)   # -1..1 속도
     mouse_scroll: float = 0.0
     mouse_buttons: dict[str, bool] = field(default_factory=lambda: {"left": False, "right": False})
+    controls: dict[str, float] = field(default_factory=dict)   # 데모 조작 요소 (ControlOutput): 이름 → 값
 
     def to_json(self) -> dict[str, Any]:
         return {"axes": {k: round(v, 4) for k, v in self.axes.items()}, "buttons": dict(self.buttons),
                 "keys": sorted(self.keys), "mouse": {"move": [round(self.mouse_move[0], 4), round(self.mouse_move[1], 4)],
-                                                    "scroll": round(self.mouse_scroll, 4), **self.mouse_buttons}}
+                                                    "scroll": round(self.mouse_scroll, 4), **self.mouse_buttons},
+                "controls": {k: round(v, 4) for k, v in self.controls.items()}}
 
 
 # ---------------------------------------------------------------- 변환 (순수 함수)
@@ -115,13 +121,13 @@ class MappingLive:
 
 class MappingEngine:
     def __init__(self, profile: Profile | None = None) -> None:
-        self.profile = profile or Profile()
+        self.profile = gamepad_profile(profile or Profile())
         self.runs: dict[str, _Run] = {}
         self.state = ControllerState()
         self.live: list[MappingLive] = []
 
     def set_profile(self, p: Profile) -> None:
-        self.profile = p
+        self.profile = gamepad_profile(p)
         self.runs = {}
         self.state = ControllerState()
         self.live = []
@@ -131,7 +137,12 @@ class MappingEngine:
 
     @property
     def needs_hands(self) -> bool:
-        return any(m.enabled and isinstance(m.input, HandInput) for m in self.profile.mappings)
+        return any(m.enabled and isinstance(m.input, (HandInput, ObjectTouchInput)) for m in self.profile.mappings)
+
+    @property
+    def needs_touch(self) -> bool:
+        return any(m.enabled and isinstance(m.input, ObjectTouchInput) for m in self.profile.mappings)
+
 
     # -------------------------------------------------------------- 매 프레임
     def update(self, snap: InputSnapshot) -> ControllerState:
@@ -154,6 +165,12 @@ class MappingEngine:
             elif isinstance(o, KeyOutput):
                 if val >= 0.5:
                     st.keys.add(o.key)
+            elif isinstance(o, ControlOutput):
+                if kind == "digital":
+                    st.controls[o.name] = max(st.controls.get(o.name, 0.0), 1.0 if val >= 0.5 else 0.0)
+                else:
+                    lo = -1.0 if kind == "bipolar" else 0.0
+                    st.controls[o.name] = max(lo, min(1.0, st.controls.get(o.name, 0.0) + val))
             elif isinstance(o, MouseOutput):
                 if o.action == "move_x":
                     mx += val
@@ -176,7 +193,7 @@ class MappingEngine:
         if isinstance(i, HandInput):
             if snap.hand is None:
                 return None
-            return 1.0 if snap.hand.get(i.gesture) else 0.0
+            return snap.hand.get(i.gesture) if i.gesture in ("x", "y") else (1.0 if snap.hand.get(i.gesture) else 0.0)
         o = snap.find(i.object)
         if o is None:
             return None
@@ -184,6 +201,8 @@ class MappingEngine:
             return 1.0 if o.visible else 0.0   # 보임 여부 자체가 입력이라 '없음'이 아니다
         if not o.visible:
             return None
+        if isinstance(i, ObjectTouchInput):
+            return None if o.touched is None else (1.0 if o.touched else 0.0)
         if isinstance(i, PenContactInput):
             return None if o.pen_contact is None else (1.0 if o.pen_contact else 0.0)
         assert isinstance(i, ObjectAxisInput)

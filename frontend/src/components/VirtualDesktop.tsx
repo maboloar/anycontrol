@@ -1,7 +1,9 @@
+import { useApp } from "../store";
 import { Panel } from "./Panel";
 import { useEffect, useRef, useState } from "react";
 import { connection } from "../connection";
 import type { FrameState, MouseState } from "../protocol";
+import { t as tr } from "../i18n";
 
 /**
  * 가상 데스크톱: 실제 OS 입력 대신 이 안의 커서가 움직인다.
@@ -11,6 +13,8 @@ import type { FrameState, MouseState } from "../protocol";
  * - 카드: 왼쪽 버튼을 누른 채 움직이면 끌기
  */
 export function VirtualDesktop() {
+  /** 맨손·물체 마우스가 꺼져 있으면 연습장을 어둡게 잠그고 켜고 오라고 안내한다 */
+  const mouseOff = useApp((s) => (s.mouseInfo?.settings.mode ?? "off") === "off");
   const areaRef = useRef<HTMLDivElement>(null);
   const [cursor, setCursor] = useState({ x: 0.5, y: 0.5, left: false, right: false, active: false });
   const [counts, setCounts] = useState([0, 0, 0]);
@@ -47,53 +51,57 @@ export function VirtualDesktop() {
           setMenu(null);
           if (el?.closest("[data-card]")) {
             drag.current = { dx: ev.x - cardRef.current.x, dy: ev.y - cardRef.current.y };
-            push("카드 잡음");
+            push(tr("카드 잡음", "Card grabbed"));
           }
         } else if (ev.button === "left" && ev.type === "up") {
           if (drag.current) {
             drag.current = null;
-            push("카드 놓음");
+            push(tr("카드 놓음", "Card dropped"));
             continue;
           }
           const btn = el?.closest("[data-btn]");
           if (btn) {
             const i = Number(btn.getAttribute("data-btn"));
             setCounts((c) => c.map((v, k) => (k === i ? v + 1 : v)));
-            push(`버튼 ${i + 1} 클릭`);
+            push(tr(`버튼 ${i + 1} 클릭`, `Button ${i + 1} clicked`));
           } else {
             const item = el?.closest("[data-menu]");
-            if (item) push(`메뉴: ${item.textContent}`);
+            if (item) push(`${tr("메뉴", "Menu")}: ${item.textContent}`);
           }
         } else if (ev.button === "right" && ev.type === "down") {
           setMenu({ x: ev.x, y: ev.y });
-          push("오른쪽 클릭");
+          push(tr("오른쪽 클릭", "Right click"));
         }
       }
     });
   }, []);
 
   return (
-    <Panel title="가상 데스크톱" label="가상 데스크톱 데모" className="demo" detail="실제 OS 입력은 보내지 않습니다" info={<>맨손·물체 마우스의 가상 커서로 창을 끌고 클릭해 보는 연습장입니다.</>}>
+    <Panel title={tr("가상 데스크톱", "Virtual desktop")} label="가상 데스크톱 데모" className="demo" detail={tr("실제 OS 입력은 보내지 않습니다", "No real OS input is sent")} info={tr(<>맨손·물체 마우스의 가상 커서로 창을 끌고 클릭해 보는 연습장입니다.</>, <>Practice dragging and clicking with the virtual cursor from hand or object mouse.</>)}>
       <div ref={areaRef} className="vdesk">
         <div className="vdesk-buttons">
           {counts.map((c, i) => (
-            <div key={i} data-btn={i} className="vbtn">버튼 {i + 1}<b>{c}</b></div>
+            <div key={i} data-btn={i} className="vbtn">{tr("버튼", "Button")} {i + 1}<b>{c}</b></div>
           ))}
         </div>
-        <ul ref={listRef} className="vlist" aria-label="스크롤 목록">
-          {Array.from({ length: 40 }, (_, i) => <li key={i}>항목 {i + 1}</li>)}
+        <ul ref={listRef} className="vlist" aria-label={tr("스크롤 목록", "Scroll list")}>
+          {Array.from({ length: 40 }, (_, i) => <li key={i}>{tr("항목", "Item")} {i + 1}</li>)}
         </ul>
-        <div data-card className="vcard" style={{ left: `${card.x * 100}%`, top: `${card.y * 100}%` }}>끌어 보세요</div>
+        <div data-card className="vcard" style={{ left: `${card.x * 100}%`, top: `${card.y * 100}%` }}>{tr("끌어 보세요", "Drag me")}</div>
         {menu && (
           <ul className="vmenu" style={{ left: `${menu.x * 100}%`, top: `${menu.y * 100}%` }}>
-            {["복사", "붙여넣기", "삭제"].map((t) => <li key={t} data-menu>{t}</li>)}
+            {tr(["복사", "붙여넣기", "삭제"], ["Copy", "Paste", "Delete"]).map((m) => <li key={m} data-menu>{m}</li>)}
           </ul>
         )}
         {cursor.active && (
           <div className={`vcursor ${cursor.left ? "l" : ""} ${cursor.right ? "r" : ""}`}
             style={{ left: `${cursor.x * 100}%`, top: `${cursor.y * 100}%` }} aria-hidden="true" />
         )}
-        {!cursor.active && <p className="vdesk-hint">오른쪽 패널에서 마우스 모드를 켜세요.</p>}
+        {mouseOff ? <div className="vdesk-lock" role="status">
+          <b>{tr("먼저 마우스를 켜 주세요", "Turn on a mouse first")}</b>
+          <span>{tr("마우스 패널에서 [맨손 마우스] 또는 [물체 마우스]를 켜면 여기서 커서로 창을 끌고 클릭해 볼 수 있어요.", "In the Mouse panel, turn on [Hand mouse] or [Object mouse] to drag and click here with the cursor.")}</span>
+          <button type="button" className="act-go" onClick={() => document.querySelector('[data-tour="mouse"]')?.scrollIntoView({ behavior: "smooth", block: "center" })}>{tr("마우스 패널로 이동", "Go to the Mouse panel")}</button>
+        </div> : !cursor.active && <p className="vdesk-hint">{tr("커서를 찾는 중… 손이나 물체가 카메라에 보이게 해 주세요.", "Looking for the cursor… keep your hand or object in view.")}</p>}
       </div>
       <ol className="small muted vlog" aria-live="polite">{log.map((l, i) => <li key={i}>{l}</li>)}</ol>
     </Panel>

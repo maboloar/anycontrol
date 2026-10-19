@@ -171,3 +171,14 @@ def test_desk_setup_api_checks_availability_and_calls_launcher(monkeypatch):
         while proc.desk_view and time.monotonic() < deadline:
             time.sleep(.01)
         assert not proc.desk_view and proc.mouse.touch_surface is None
+
+
+def test_auto_select_prefers_homese_then_17sa_then_facetime_and_skips_stalled() -> None:
+    from vision_input.capture.devices import preferred_camera
+    cams = [dict(index=0, unique_id='ft', name='FaceTime HD Camera', is_continuity=False),
+            dict(index=1, unique_id='17', name='17sa Camera', is_continuity=True),
+            dict(index=2, unique_id='hs', name='homese Camera', is_continuity=True)]
+    assert preferred_camera(cams)['unique_id'] == 'hs'
+    assert preferred_camera(cams, ('hs',))['unique_id'] == '17'
+    assert preferred_camera(cams, ('hs', '17'))['unique_id'] == 'ft'
+    assert preferred_camera(cams[1:2])['unique_id'] == '17'              # 둘 다 없으면 연속성 카메라

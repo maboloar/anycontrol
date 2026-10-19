@@ -19,6 +19,8 @@ import numpy as np
 
 from .capture import Frame
 from .auto_calibration import AutoCalibration
+from .hands.tip_refine import TipRefiner
+from .hands.tip_track import TipTracker
 from .hands.detector import CONNECTIONS as HAND_CONNECTIONS
 from .hands.detector import HandFrame, HandWorker, available_backends, default_backend
 from .hands.detector import available as hands_available
@@ -27,16 +29,21 @@ from .hands.gestures import GestureRecognizer, features
 from .io.depth import palm_scale
 from .io.mouse import MouseController, MouseSettings
 from .io.touchpad import TouchSurface
+from .object_touch import ObjectTouch
 from .io.sink import VirtualSink
 from .io.macos import DualSink, RealOutput
 from .mapping.engine import InputSnapshot, MappingEngine, ObjectSnap
 from .mapping.learn import AxisLearner
 from .mapping.schema import Profile
+from .tracking.smooth import SpikeEma
+from .tracking.anchor import AnchorConfig, ObjectAnchor
+from .depth_model import INPUT_SIZE as DEPTH_SIZE, DepthService, ObjectDepth, object_depth_position
 from .mapping.schema import warnings as profile_warnings
 from .pen import PenTracker
 from .tracking.api import Box, InitPrompt, Tracker, TrackOutput, TrackState
 from .tracking.axes import AxisState
 from .tracking.desk import DeskAxes, DeskCalibration, mask_foot
+from .tracking.settle import SettleConfig, SettleWatch
 from .tracking.measure import mask_contour, measure_mask
 from .tracking.register import Registration
 
@@ -78,6 +85,7 @@ class VisionProcessor:
         self.tracker: Tracker | None = tracker_factory() if tracker_factory else None
         self.objects: dict[int, TrackedObject] = {}
         self._ids = itertools.count(1)
+        self._removed_object_ids: set[int] = set()
         self.generation = 0  # 비동기 등록 결과가 다른 소스에 들어가지 않게 한다.
         self.latest: Frame | None = None
         self.frame_size: tuple[int, int] | None = None
@@ -88,19 +96,66 @@ class VisionProcessor:
         self.mouse.input_mirror = self.input_mirror
         self.hands = hand_worker if hand_worker is not None else (HandWorker(default_backend()) if hands_available() else None)
         self.pens: dict[int, PenTracker] = {}
+        self.tips = TipTracker()   # 물체 마우스: 검지·중지 끝점 직접 추적
+        self.tip_refiner = TipRefiner(None)   # EfficientTAM 분할기 (create_app 이 넣어 준다)
         self.hand_drawing = HandDrawing()
         self.hand_drawing.mirror = self.input_mirror
         # 매핑: observe = 값만 계산해 보여 줌, send = 가상 컨트롤러로 내보냄
         self.mapping = MappingEngine()
         self.output_mode = "observe"
         self.map_gestures = GestureRecognizer()
+        self.hand_input_enabled = True
+        self.object_touch = ObjectTouch()
+        self._touched: dict[int, bool] = {}
         self.learner: AxisLearner | None = None
         self._t_prev: float | None = None
         self.desk: DeskCalibration | None = None
+        self.depth = DepthService()   # 깊이 모델 백그라운드 추론 (가중치가 없으면 아무것도 안 한다)
+        self._wire_tracker()
+        self._anchors: dict[int, ObjectAnchor] = {}   # 물체마다 바닥 기준점 (커서를 움직이는 점, 광학 흐름으로 추적)
+        self._anchor_gen: dict[int, int] = {}
+        self._anchor_gone: dict[int, int] = {}
+        self._obj_depth = ObjectDepth()   # 물체 마우스의 깊이 모델 앞뒤 위치 (옵션)
+        self._model_depth_ema: dict[int, SpikeEma] = {}
+        self._ref_generation = 0
+        self._occluder: np.ndarray | None = None   # 손 가림 처리를 켰을 때 이번 프레임의 손 마스크
+        self._settle: dict[int, SettleWatch] = {}   # 물체마다 '내려놓고 가만히 있음' 감지 (기준점 다시 찍기·자동 분할 재지정)
+        self.auto_reseg = True                     # 재추적 뒤·오래 가만히 있을 때 지금 프레임에서 자동으로 다시 분할
+        self.auto_reseg_long_s = SettleConfig().reseg_long_s   # 오래 가만히 있다고 볼 시간 (초, 개발자 설정)
+        self._mouse_ema: dict[int, tuple[SpikeEma, SpikeEma]] = {}
+        self.ema = True              # 실시간 EMA(튐 억제): 모든 물체 축·펜촉·물체 마우스 좌표
+        self._t_frame = 0.0
         self.hand_occlusion = False  # 손 인식 가림 처리 (켜면 손 추적이 항상 돈다: CPU 약 30ms/프레임, 별도 스레드)
         self.desk_view = False
         self._paused = False
         self.auto_calibration: AutoCalibration | None = None
+
+    def _wire_tracker(self) -> None:
+        """추적기의 정지 배경 모델에 깊이 모델(백그라운드 DepthService)을 연결한다. 가중치가 없으면 색 배경만 쓴다."""
+        if self.tracker is None or not hasattr(self.tracker, "depth_submit"):
+            return
+        depth = self.depth
+
+        def submit(img, t, callback):  # type: ignore[no-untyped-def]
+            return depth.available and depth.submit(img, lambda d: callback(d, t))
+        self.tracker.depth_submit = submit
+
+    def scene_snapshot(self) -> np.ndarray | None:
+        """엔진 스레드에서: 최신 프레임 해상도의 배경 모델 전경 로그 오즈 (등록 후보 고르기용). 없으면 None."""
+        sc = getattr(self.tracker, "scene", None)
+        if sc is None or self.frame_size is None:
+            return None
+        lg = sc.logit(sc.t)
+        if lg is None:
+            return None
+        return cv2.resize(lg, self.frame_size, interpolation=cv2.INTER_LINEAR)
+
+    def set_ema(self, enabled: bool) -> None:
+        """실시간 EMA(튐 억제) 켜고 끄기. 필터 상태는 새로 시작한다."""
+        self.ema = bool(enabled)
+        self._mouse_ema.clear()
+        for obj in self.objects.values():
+            obj.axes.ema_filters.clear()
 
     def set_view_mode(self, desk_view: bool) -> None:
         self.desk_view = desk_view
@@ -113,6 +168,7 @@ class VisionProcessor:
         self.cancel_auto_calibration('소스가 바뀌어 보정을 종료했습니다.')
         self.real.off("source")
         self.generation += 1
+        self._drop_object_mappings(set(self.objects))
         self.objects.clear()
         self.pens.clear()
         self.hand_drawing.reset()
@@ -124,6 +180,7 @@ class VisionProcessor:
         if close is not None:
             close()
         self.tracker = self.tracker_factory() if self.tracker_factory else None
+        self._wire_tracker()
         if refresh_enabled is not None and hasattr(self.tracker, "configure_refresh"):
             self.tracker.configure_refresh(refresh_enabled, refresh_hz)
         self.latest = None
@@ -139,6 +196,46 @@ class VisionProcessor:
             self.mouse.configure(self.mouse.settings.model_copy(update={"mode": "off", "object_id": None}))
         self.mapping.reset()
         self.sink.release_all()
+
+    def reset_settings(self) -> dict[str, Any]:
+        """Reset the current experience while preserving the capture source and saved profiles."""
+        desk_view = self.desk_view
+        self.reset()
+        self.set_view_mode(desk_view)
+        self.auto_calibration = None
+        self._anchors.clear()
+        self._anchor_gen.clear()
+        self._anchor_gone.clear()
+        self._settle.clear()
+        self._mouse_ema.clear()
+        self._model_depth_ema.clear()
+        self._obj_depth.reset()
+        self.tips.reset()
+        self.tip_refiner.reset()
+        self._occluder = None
+        if self.hands is not None and self.hands.backend != default_backend():
+            self.set_hand_backend(default_backend())
+        self.hand_input_enabled = True
+        self.hand_occlusion = False
+        self.auto_reseg = True
+        self.auto_reseg_long_s = SettleConfig().reseg_long_s
+        self.set_ema(True)
+        self.set_input_mirror(True)
+        self.mouse.configure(MouseSettings())
+        self.hand_drawing.set_enabled(False)
+        self.map_gestures.reset()
+        self.object_touch = ObjectTouch()
+        self._touched = {}
+        self.output_mode = "observe"
+        self.mapping.set_profile(Profile())
+        if self.tracker is not None and hasattr(self.tracker, "configure_refresh"):
+            self.tracker.configure_refresh(True, .5)
+        return {"mouse": self.mouse_info(), "mapping": self.mapping_info()}
+
+    def set_hand_input(self, enabled: bool) -> None:
+        self.hand_input_enabled = enabled
+        self.map_gestures.reset()
+        # This switch belongs only to the @hand patch source. Mouse, drawing and object touch are independent.
 
     def close(self) -> None:
         """엔진 스레드에서 종료한다. 모델 워커와 눌린 입력을 남기지 않는다."""
@@ -183,22 +280,35 @@ class VisionProcessor:
             self._paused = False
             self._t_prev = None
         self.latest = frame
+        self._t_frame = frame.t_capture
         self.frame_size = frame.size
         hf = self._hands(frame)  # 직전까지 처리된 손 (별도 스레드, 최대 수십 ms 늦음)
         if self.tracker is not None and self.objects:
             setter = getattr(self.tracker, "set_occluders", None)
+            occ = hand_mask(hf, frame.size) if self.hand_occlusion and hf is not None and 0 <= frame.t_capture - hf.t < 0.15 else None
+            self._occluder = occ
             if setter is not None:
-                setter(hand_mask(hf, frame.size) if self.hand_occlusion and hf is not None and 0 <= frame.t_capture - hf.t < 0.15 else None)
+                setter(occ)
             outs = self.tracker.step(frame.image, frame.t_capture)
             for oid, out in outs.items():
                 obj = self.objects.get(oid)
                 if obj is not None:
                     self._apply(obj, out)
+                    self._settle.setdefault(oid, SettleWatch(SettleConfig(reseg_long_s=self.auto_reseg_long_s))).update(
+                        out, frame.t_capture)
+            for oid in [i for i in self._settle if i not in self.objects]:
+                del self._settle[oid]
+            self._update_anchors(frame)
+        elif self.tracker is not None and hasattr(self.tracker, "observe"):
+            self.tracker.observe(frame.image, frame.t_capture)  # 물체가 없어도 빈 책상(배경)을 배워 둔다
         for oid, pen in self.pens.items():
             pen.suspended = bool(self.auto_calibration and self.auto_calibration.active)
             obj = self.objects.get(oid)
             if obj is not None:
                 pen.mirror = self.input_mirror
+                pen.ema = self.ema
+                pen.occluder = self._occluder
+                pen.depth_service = self.depth
                 pen.update(frame.image, obj.out, frame.t_capture, self.desk, overhead=self.desk_view)
         t = frame.t_capture
         if self.auto_calibration is not None and self.auto_calibration.active:
@@ -211,6 +321,7 @@ class VisionProcessor:
         self.hand_drawing.update(hf, t, self.mouse.settings.pinch_on)
         dt = 1 / 30 if self._t_prev is None else min(0.2, max(1e-3, t - self._t_prev))
         self._t_prev = t
+        self._update_touch(hf, t, frame)
         ctl = self.mapping.update(self._snapshot(t, hf))
         send = self.output_mode == "send"
         if self.learner is not None:
@@ -221,6 +332,7 @@ class VisionProcessor:
         mouse_obj = self.objects.get(self.mouse.settings.object_id or -1)
         if mouse_obj is not None and mouse_obj.out.debug.get("reanchored"):
             self.mouse.depth_cursor.reset()
+            self.mouse.hybrid_xy.reset()
             self.mouse.pen_last = None
         mouse_box = None
         if visible and mouse_obj is not None and mouse_obj.out.box is not None:
@@ -229,7 +341,9 @@ class VisionProcessor:
             mouse_box = (x0 / w, y0 / h, x1 / w, y1 / h)
         mouse_foot = None
         if visible and mouse_obj is not None and mouse_obj.kind != "pen":
-            foot = self._foot_px(mouse_obj)
+            foot = self._anchor_xy(mouse_obj) if self.mouse.settings.anchor_cursor else None
+            if foot is None:
+                foot = self._foot_px(mouse_obj)
             if foot is not None:
                 w, h = self.frame_size or (1, 1)
                 mouse_foot = (foot[0] / w, foot[1] / h)
@@ -238,10 +352,13 @@ class VisionProcessor:
             self.objects[self.mouse.settings.object_id].out.pose.scale
             if self.mouse.settings.object_id in self.objects and
             self.objects[self.mouse.settings.object_id].out.pose is not None else 1.0)
-        self.mouse.update(t, hf, center, visible, bool(pen and pen.contact and not pen.uncertain),
+        pen_scale = self._anchor_scale(mouse_obj, pen is not None, float(pen_scale))
+        pen_scale = self._model_depth_scale(mouse_obj, pen is not None, visible, float(pen_scale), t)
+        tip_frame = self._tip_frame(frame, hf, center, pen is not None, t)
+        self.mouse.update(t, hf, center, visible, bool(pen and pen.pressed),
                           ctl.mouse_buttons if send else None,
                           obj_is_pen=pen is not None, obj_scale=float(pen_scale), obj_box=mouse_box,
-                          obj_foot=mouse_foot)
+                          obj_foot=mouse_foot, tips=tip_frame)
         if send:
             self.sink.gamepad(ctl.axes, ctl.buttons)
             self.sink.set_keys(ctl.keys)
@@ -252,17 +369,100 @@ class VisionProcessor:
                 self.sink.scroll(ctl.mouse_scroll * SCROLL_SPEED * dt)
         st = self.state()
         st["mouse"] = {**self.mouse.status, **self.sink.snapshot()}
-        st["controller"] = {"mode": self.output_mode, **self.sink.controller_snapshot()}
+        st["controller"] = {"mode": self.output_mode, **self.sink.controller_snapshot(),
+                            "controls": {k: round(v, 4) for k, v in ctl.controls.items()}}
         st["hand_drawing"] = {**self.hand_drawing.state(),
                               "error": None if self.hands is None else self.hands.error}
         if self.mapping.profile.mappings:
             st["mapping"] = {"live": self.mapping.live_json(), "computed": ctl.to_json()}
+        if tip_frame is not None:
+            tw, th = tip_frame.size
+            st["tips"] = {n: {"x": round(float(p.xy[0]) / tw, 4), "y": round(float(p.xy[1]) / th, 4), "ok": p.valid,
+                              "conf": round(p.conf, 2), "down": bool(self.mouse.finger_out.left if n == "middle" else self.mouse.finger_out.right),
+                              **self.mouse.tip_clicks.debug(n)}
+                          for n, p in tip_frame.tips.items()}
         if hf is not None and self.hands is not None and self.hands.running:
             st["hands"] = [{"points": np.round(h.points, 4).tolist(), "handedness": h.handedness,
                             "score": round(h.score, 3)} for h in hf.hands]
         if self.pens:
             st["pens"] = {oid: p.state() for oid, p in self.pens.items()}
+        if self._touched:
+            st["touch"] = self.object_touch.state()
         return st
+
+    def _update_touch(self, hf: HandFrame | None, t: float, frame: "Frame | None" = None) -> None:
+        """물체 터치(매핑이 터치 입력을 쓸 때)를 갱신한다."""
+        # 손 인식은 영상보다 느리게 따로 돈다(부하가 걸리면 0.2초를 넘기기 쉽다). 터치에는 0.6초까지의 결과를 쓴다
+        fresh = hf if hf is not None and 0 <= t - hf.t < 0.60 else None
+        if self.mapping.needs_touch:
+            w, h = self.frame_size or (1, 1)
+            objs = {}
+            for o in self.objects.values():
+                vis = o.out.state.visible and o.out.box is not None and o.kind != "pen"
+                box = (o.out.box[0] / w, o.out.box[1] / h, o.out.box[2] / w, o.out.box[3] / h) if vis else None
+                objs[o.id] = (box, o.out.mask if vis else None)
+            self._touched = self.object_touch.update(None if frame is None else frame.image, fresh, t, objs)
+        else:
+            self._touched = {}
+
+    def touch_settings(self) -> dict[str, Any]:
+        return {"object_sensitivity": self.object_touch.sensitivity}
+
+    def set_touch_settings(self, object_sensitivity: float | None = None) -> dict[str, Any]:
+        if object_sensitivity is not None:
+            self.object_touch.sensitivity = float(np.clip(object_sensitivity, 0, 1))
+        return self.touch_settings()
+
+    def _model_depth_scale(self, obj: "TrackedObject | None", is_pen: bool, visible: bool, size_scale: float, t: float) -> float:
+        """물체 마우스의 깊이 신호 (기본: 깊이 모델). 모델이 있고 결과가 신선하면 책상 앞뒤 위치 u(0 먼 쪽 ~ 1 가까운 쪽)를
+        exp(u) 로 크기 자리에 넣는다 (커서는 log(크기)를 쓰므로 u 가 그대로 세로 움직임이 된다).
+        추론은 백그라운드(~10Hz). 모델이 없거나 설정이 size 이거나 결과가 오래됐으면 그 프레임은 크기를 쓰고 커서 기준을 새로 시작한다(점프 방지).
+        책상 기준(가장자리 행)은 천천히 따라가며 주기적으로 자동 갱신되고, reset_depth_reference() 로 다시 잡을 수 있다."""
+        s = self.mouse.settings
+        want = (s.mode == "object" and s.coordinate_mode == "depth" and s.depth_source == "model"
+                and obj is not None and not is_pen and self.depth.available)
+        if not want or not visible:
+            if self.mouse.model_depth:
+                self.mouse.depth_cursor.reset()
+            self.mouse.model_depth = False
+            self._obj_depth.reset()
+            self._model_depth_ema.clear()
+            return size_scale
+        od, mask, frame = self._obj_depth, obj.out.mask, self.latest
+        if od.due(t) and not self.depth.busy and mask is not None and frame is not None:
+            sw, sh = DEPTH_SIZE
+            small = cv2.resize(mask.astype(np.uint8), (sw, sh), interpolation=cv2.INTER_NEAREST) > 0
+            others = np.zeros((sh, sw), bool)
+            for oid, o in self.objects.items():
+                if oid != obj.id and o.out.mask is not None and o.out.state.visible:
+                    others |= cv2.resize(o.out.mask.astype(np.uint8), (sw, sh), interpolation=cv2.INTER_NEAREST) > 0
+            rows = od.rows if od.n_ref >= 3 else None      # 기준이 모이기 전에는 프레임마다 잰 값으로
+            if self.depth.submit(frame.image, lambda depth: od.update(object_depth_position(depth, small, others, rows=rows), t)):
+                od.last_t = t
+        if od.ref_generation != self._ref_generation:       # 기준을 새로 잡았다: 커서 기준도 새로 (점프 방지)
+            self._ref_generation = od.ref_generation
+            self.mouse.depth_cursor.reset()
+            self._model_depth_ema.clear()
+        m = od.scale(t)
+        if m is None:
+            if self.mouse.model_depth:
+                self.mouse.depth_cursor.reset()
+            self.mouse.model_depth = False
+            return size_scale
+        if not self.mouse.model_depth:
+            self.mouse.depth_cursor.reset()
+        self.mouse.model_depth = True
+        u = math.log(m)
+        if self.ema:
+            u = self._model_depth_ema.setdefault(obj.id, SpikeEma(tau=0.12))(u, t, 0.03)
+        return float(math.exp(u))
+
+    def reset_depth_reference(self) -> dict[str, Any]:
+        """물체 마우스 깊이의 책상 기준을 다시 잡는다 (카메라를 옮긴 뒤 등). 다음 몇 프레임 동안 새 기준을 모은다."""
+        self._obj_depth.reset_reference()
+        self.mouse.depth_cursor.reset()
+        self._model_depth_ema.clear()
+        return self.mouse_info()
 
     # ---------------------------------------------------------------- 매핑
     def _axes(self, obj: TrackedObject) -> dict[str, float | None]:
@@ -325,15 +525,46 @@ class VisionProcessor:
 
     def _snapshot(self, t: float, hf: HandFrame | None) -> InputSnapshot:
         objs = [ObjectSnap(o.id, o.name, o.out.state.visible, self._axes(o),
-                           (self.pens[o.id].contact and not self.pens[o.id].uncertain) if o.id in self.pens else None) for o in self.objects.values()]
+                           self.pens[o.id].pressed if o.id in self.pens else None,
+                           self._touched.get(o.id) if self.mapping.needs_touch else None) for o in self.objects.values()]
         hand = None
-        if self.mapping.needs_hands and hf is not None and t - hf.t < 0.3:
-            best = max(hf.hands, key=lambda h: h.score, default=None)
+        if self.hand_input_enabled and self.mapping.needs_hands and hf is not None and 0 <= t - hf.t < 0.15:
+            best = max((h for h in hf.hands if h.score >= .5), key=lambda h: h.score, default=None)
             g = self.map_gestures.update(best, t)
-            hand = {"pinch": g.left, "pinch_middle": g.right} if best is not None else None
+            if best is not None:
+                palm = features(best, self.map_gestures.cfg).palm
+                hand = {"pinch": g.left, "pinch_middle": g.right,
+                        "x": float((1 - palm[0] if self.input_mirror else palm[0]) - .5), "y": float(palm[1] - .5)}
+        if hand is None:
+            self.map_gestures.reset()
         return InputSnapshot(t, objs, hand)
 
+    def bind_mapping_objects(self, p: Profile) -> Profile:
+        """Resolve legacy name references once; renaming must not change identity."""
+        names = {}
+        for obj in self.objects.values():
+            names.setdefault(obj.name, f"#{obj.id}")
+        mappings = []
+        for m in p.mappings:
+            inp = m.input
+            if hasattr(inp, "object") and inp.object in names:
+                m = m.model_copy(update={"input": inp.model_copy(update={"object": names[inp.object]})})
+            mappings.append(m)
+        return p.model_copy(update={"mappings": mappings})
+
+    def portable_profile(self, p: Profile) -> Profile:
+        """Saved templates use names so they can be applied to a later session."""
+        refs = {f"#{o.id}": o.name for o in self.objects.values()}
+        return p.model_copy(update={"mappings": [
+            m.model_copy(update={"input": m.input.model_copy(update={"object": refs[m.input.object]})})
+            if hasattr(m.input, "object") and m.input.object in refs else m
+            for m in p.mappings]})
+
     def set_profile(self, p: Profile) -> dict[str, Any]:
+        p = self.bind_mapping_objects(p)
+        p = p.model_copy(update={"mappings": [m for m in p.mappings if not (
+            hasattr(m.input, "object") and m.input.object.startswith("#") and m.input.object[1:].isdigit()
+            and int(m.input.object[1:]) in self._removed_object_ids)]})
         self.sink.release_all()  # 바뀐 매핑에 없는 키가 눌린 채로 남지 않게
         self.mapping.set_profile(p)
         if self.hands is None and self.mapping.needs_hands:
@@ -371,7 +602,8 @@ class VisionProcessor:
     def _hands(self, frame: Frame) -> HandFrame | None:
         if self.hands is None:
             return None
-        if (self.mouse.settings.needs_hands or self.mapping.needs_hands or self.hand_drawing.enabled
+        if (self.mouse.settings.needs_hands or self.hand_drawing.enabled or self.mapping.needs_touch
+                or (self.hand_input_enabled and self.mapping.needs_hands)
                 or (self.hand_occlusion and self.objects) or (self.auto_calibration and self.auto_calibration.active and self.auto_calibration.needs_hands)):
             self.hands.start()
             self.hands.offer(frame.image, frame.t_capture)
@@ -379,6 +611,93 @@ class VisionProcessor:
         if self.hands.running:
             self.hands.stop()
         return None
+
+    def _tip_frame(self, frame: Frame, hf: HandFrame | None, center: tuple[float, float] | None,
+                   is_pen: bool, t: float):  # type: ignore[no-untyped-def]
+        """물체 마우스에서 검지·중지 끝점을 이번 프레임에 맞게 추적한다. 랜드마크는 끝점을 찍고 보정할 때만 쓴다."""
+        s = self.mouse.settings
+        if not (s.mode == "object" and s.hand_clicks and s.finger_track and not s.object_hybrid) or is_pen:
+            self.tips.reset()
+            self.tip_refiner.reset()
+            return None
+        hand, hand_t = None, None
+        if hf is not None and 0 <= t - hf.t < 0.3:
+            hand = self.mouse._pick_hand([h for h in hf.hands if h.score >= .5], center)
+            hand_t = hf.t
+        tf = self.tips.update(frame.image, t, hand, hand_t)
+        if s.tip_refine and self.tip_refiner.segmenter is not None:
+            self.tip_refiner.apply(self.tips)           # 끝난 분할 결과로 점을 바로잡고 살색 모델 갱신
+            self.tip_refiner.maybe_submit(frame.image, t, tf)
+        return tf
+
+    # ---------------------------------------------------------------- 물체 커서 기준점 (바닥 아래-가운데, 광학 흐름)
+    def _update_anchors(self, frame: Frame) -> None:
+        """물체마다(펜 제외) 바닥 기준점을 광학 흐름으로 갱신한다. 분할 영역은 시작·천천히 당기는 보정에만 쓴다."""
+        objs = {oid: o for oid, o in self.objects.items() if isinstance(o, TrackedObject) and o.kind != "pen"}
+        for oid in list(self._anchors):
+            if oid not in objs:
+                del self._anchors[oid]
+                self._anchor_gen.pop(oid, None)
+                self._anchor_gone.pop(oid, None)
+        if not objs:
+            return
+        W, H = frame.size
+        cfg = AnchorConfig()
+        k = cfg.work_width / W
+        gray = cv2.resize(cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY), (max(round(W * k), 8), max(round(H * k), 8)),
+                          interpolation=cv2.INTER_AREA)
+        for oid, o in objs.items():
+            a = self._anchors.setdefault(oid, ObjectAnchor(cfg))
+            out = o.out
+            if out.debug.get("reanchored"):
+                a.reset()                                # 재검출로 순간이동했다: 새로 찍는다
+            visible = out.state.visible
+            if visible:
+                self._anchor_gone[oid] = 0
+            else:
+                self._anchor_gone[oid] = self._anchor_gone.get(oid, 0) + 1
+                if self._anchor_gone[oid] > 45:
+                    a.reset()                            # 오래 안 보였다 다시 나타나면 다른 곳일 수 있다
+            mask = None
+            if visible and out.mask is not None:
+                mask = cv2.resize(out.mask.astype(np.uint8), (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+            trust = out.state == TrackState.TRACKING and float(out.debug.get("hand_frac", 0.0)) < 0.15
+            watch = self._settle.get(oid)
+            if watch is not None and mask is not None and watch.anchor_due(self._t_frame):
+                a.rebase(mask)                           # 가만히 놓였다: 밀려난 기준점을 바닥 아래-가운데로 다시 찍는다
+            a.update(gray, mask, visible, trust, (W, H), out.pose.scale if out.pose is not None else None)
+
+    def _anchor_xy(self, obj: TrackedObject) -> tuple[float, float] | None:
+        a = self._anchors.get(obj.id)
+        if a is None or not a.state.valid or a.state.xy is None or not obj.out.state.visible:
+            return None
+        return a.state.xy
+
+    def _anchor_norm(self, obj: TrackedObject) -> list[float] | None:
+        """화면에 항상 표시할 기준점 (0..1). 보이지 않는 동안은 None."""
+        xy = self._anchor_xy(obj)
+        if xy is None or obj.kind == "pen":
+            return None
+        w, h = self.frame_size or (1, 1)
+        return [round(xy[0] / w, 4), round(xy[1] / h, 4)]
+
+    def _anchor_scale(self, obj: TrackedObject | None, is_pen: bool, pose_scale: float) -> float:
+        """크기 기반 깊이 신호: 분할 영역이 아니라 기준점 주변 광학 흐름에서 잰 크기. 쥐는 동안 영역 크기가 흔들려도 커서가 안 흔들린다.
+        기준점을 새로 찍으면 커서 기준도 새로 시작한다 (점프 방지)."""
+        s = self.mouse.settings
+        if obj is None or is_pen or not s.anchor_cursor:
+            return pose_scale
+        a = self._anchors.get(obj.id)
+        if a is None:
+            return pose_scale
+        if self._anchor_gen.get(obj.id) != a.generation:
+            if obj.id in self._anchor_gen:
+                self.mouse.depth_cursor.reset()
+                self._model_depth_ema.clear()
+            self._anchor_gen[obj.id] = a.generation
+        if a.state.valid and a.state.scale is not None and obj.out.state.visible:
+            return float(a.state.scale)
+        return pose_scale
 
     def _mouse_object(self) -> tuple[tuple[float, float] | None, bool]:
         s = self.mouse.settings
@@ -395,13 +714,24 @@ class VisionProcessor:
             return (pen.tip[0] / w, pen.tip[1] / h), obj.out.state.visible
         if obj.out.pose is None:
             return None, False
-        return (obj.out.pose.cx / w, obj.out.pose.cy / h), obj.out.state.visible
+        cx, cy = obj.out.pose.cx / w, obj.out.pose.cy / h
+        anchor = self._anchor_xy(obj) if s.anchor_cursor else None
+        if anchor is not None:      # 분할 영역 중심 대신, 광학 흐름으로 따라간 바닥 기준점으로 커서를 움직인다
+            cx, cy = anchor[0] / w, anchor[1] / h
+        if self.ema and obj.out.state.visible:   # 물체 마우스 좌표도 한두 프레임 튐을 누른다
+            fx, fy = self._mouse_ema.setdefault(obj.id, (SpikeEma(), SpikeEma()))
+            cx, cy = fx(cx, self._t_frame, 0.004), fy(cy, self._t_frame, 0.004)
+        else:
+            self._mouse_ema.pop(obj.id, None)
+        return (cx, cy), obj.out.state.visible
 
     def set_mouse(self, settings: MouseSettings) -> dict[str, Any]:
         if self.auto_calibration and self.auto_calibration.active:
             raise ValueError("자동 보정을 마치거나 취소한 뒤 수동 설정을 변경하세요.")
         if settings.mode == "object" and settings.object_id not in self.objects:
             raise ValueError("물체 마우스로 쓸 물체를 먼저 등록하고 선택하세요.")
+        if settings.mode == "object" and settings.object_hybrid and settings.object_id in self.pens:
+            raise ValueError("한 손 하이브리드는 일반 물체를 선택하세요. 펜은 별도 접촉 모드를 사용합니다.")
         if settings.needs_hands and self.hands is None:
             raise ValueError("손 인식 엔진이 없어 이 모드를 쓸 수 없습니다 (Apple Vision 또는 MediaPipe).")
         self.mouse.configure(settings)
@@ -416,6 +746,9 @@ class VisionProcessor:
         self.hands.set_backend(backend)
         self.sink.release_all()
         self.mouse.gestures.reset()
+        self.mouse.hybrid.reset()
+        self.mouse.hybrid_xy.reset()
+        self.mouse.depth_cursor.reset()
 
     def hand_backend_info(self) -> dict[str, Any]:
         return {"hand_backend": None if self.hands is None else self.hands.backend,
@@ -424,6 +757,9 @@ class VisionProcessor:
     def mouse_info(self) -> dict[str, Any]:
         return {"settings": self.mouse.settings.model_dump(), "status": self.mouse.status, **self.hand_backend_info(),
                 "hands_available": self.hands is not None,
+                "depth_model_available": self.depth.available,
+                "depth_reference": {"samples": self._obj_depth.n_ref, "resets": self._obj_depth.reference_resets,
+                                    "ready": self._obj_depth.rows is not None},
                 "hands_running": bool(self.hands and self.hands.running),
                 "hands_error": None if self.hands is None else self.hands.error}
 
@@ -470,11 +806,35 @@ class VisionProcessor:
         self._apply(obj, out, force_mask=reg.mask)
         obj.axes.set_neutral()
         self.objects[oid] = obj
+        self.mapping.profile = self.bind_mapping_objects(self.mapping.profile)
         if pen_line is not None:
             self.pens[oid] = PenTracker(pen_line[0], pen_line[1])
             self.pens[oid].overhead = self.desk_view
             obj.kind = "pen"
         return obj
+
+    def object_memory(self, oid: int) -> dict[str, Any]:
+        """물체 기억 보기. 없는 물체는 KeyError, 기억을 보여 주지 못하는 트래커면 LookupError."""
+        obj = self.objects[oid]
+        memory = getattr(self.tracker, "memory", None)
+        if memory is None:
+            raise LookupError("이 추적기는 물체 기억 보기를 지원하지 않습니다.")
+        return {**memory(oid), "name": obj.name, "color": obj.color}
+
+    def object_thumbnail(self, oid: int) -> str | None:
+        """물체 패널 아이콘 사진 (등록 모습). 지원하지 않는 추적기면 None."""
+        self.objects[oid]
+        thumb = getattr(self.tracker, "thumbnail", None)
+        return None if thumb is None else thumb(oid)
+
+    def forget_object_memory(self, oid: int, items: list[tuple[str, float]]) -> dict[str, Any]:
+        """물체 기억 중 사용자가 고른 것(AI 앵커·재획득)을 지우고 새 기억 보기를 돌려준다."""
+        self.objects[oid]
+        forget = getattr(self.tracker, "forget_memory", None)
+        if forget is None:
+            raise LookupError("이 추적기는 물체 기억 삭제를 지원하지 않습니다.")
+        removed = forget(oid, items)
+        return {**self.object_memory(oid), "removed": removed}
 
     def reselect(self, oid: int, frame: Frame, reg: Registration, prompt: dict[str, Any],
                  pen_line: tuple[tuple[float, float], tuple[float, float]] | None = None) -> TrackedObject:
@@ -509,11 +869,67 @@ class VisionProcessor:
             self.mouse.pen_last = None
         return obj
 
+    # ---------------------------------------------------------------- 자동 분할 재지정
+    def auto_reseg_jobs(self) -> list[tuple[int, dict[str, Any], int, str, float | None]]:
+        """엔진 스레드에서: 지금 자동으로 다시 분할할 물체들 (id, 박스 프롬프트(0..1), 후보 번호, 이유, 정지 시작 시각).
+        재추적 뒤 가만히 있거나 오래 가만히 있는 일반 물체만 (펜·자동 보정 중 제외). 돌려준 물체는 끝날 때까지 다시 내지 않는다."""
+        if not self.auto_reseg or self.frame_size is None or (self.auto_calibration and self.auto_calibration.active):
+            return []
+        w, h = self.frame_size
+        jobs = []
+        for oid, watch in self._settle.items():
+            obj = self.objects.get(oid)
+            if obj is None or obj.kind == "pen" or obj.out.box is None or not obj.out.state.visible:
+                continue
+            why = watch.reseg_due(self._t_frame)
+            if why is None:
+                continue
+            x0, y0, x1, y1 = obj.out.box
+            mx, my = 0.06 * (x1 - x0), 0.06 * (y1 - y0)   # 지금 박스보다 조금 넓게 (부정확한 마스크가 물체 일부를 놓쳤을 수 있다)
+            box = [max(0.0, (x0 - mx) / w), max(0.0, (y0 - my) / h), min(1.0, (x1 + mx) / w), min(1.0, (y1 + my) / h)]
+            jobs.append((oid, {"box": [round(v, 4) for v in box]}, int(obj.reg.candidate_index), why, watch.since))
+        return jobs
+
+    def auto_reseg_info(self) -> dict[str, Any]:
+        return {"enabled": self.auto_reseg, "long_s": self.auto_reseg_long_s}
+
+    def set_auto_reseg(self, enabled: bool | None = None, long_s: float | None = None) -> dict[str, Any]:
+        """개발자 설정: 자동 분할 재지정 켜기·끄기, 오래 가만히 있다고 볼 시간(3~600초). 이미 있는 물체에도 바로 적용."""
+        if enabled is not None:
+            self.auto_reseg = bool(enabled)
+        if long_s is not None:
+            self.auto_reseg_long_s = float(min(600.0, max(3.0, long_s)))
+            for w in self._settle.values():
+                w.cfg.reseg_long_s = self.auto_reseg_long_s
+        return self.auto_reseg_info()
+
+    def auto_reseg_done(self, oid: int, ok: bool) -> None:
+        watch = self._settle.get(oid)
+        if watch is not None:
+            watch.reseg_done(self._t_frame, ok)
+
+    def auto_reseg_still(self, oid: int, since: float | None) -> bool:
+        """분할하는 동안 물체가 움직였으면(정지 구간이 바뀜) 결과를 버린다."""
+        watch = self._settle.get(oid)
+        return watch is not None and since is not None and watch.since == since
+
+    def _drop_object_mappings(self, ids: set[int]) -> None:
+        if not ids:
+            return
+        bound = self.bind_mapping_objects(self.mapping.profile)
+        self._removed_object_ids.update(ids)
+        refs = {f"#{oid}" for oid in ids}
+        kept = [m for m in bound.mappings if not (hasattr(m.input, "object") and m.input.object in refs)]
+        if len(kept) != len(bound.mappings):
+            self.set_profile(bound.model_copy(update={"mappings": kept}))
+
     def remove(self, oid: int) -> None:
         if self.auto_calibration and self.auto_calibration.active and self.auto_calibration.object_id == oid:
             self.cancel_auto_calibration('보정 중인 물체가 삭제되었습니다.')
-        if self.objects.pop(oid, None) is None:
+        if oid not in self.objects:
             raise KeyError(oid)
+        self._drop_object_mappings({oid})
+        self.objects.pop(oid)
         self.pens.pop(oid, None)
         if self.tracker is not None:
             self.tracker.remove(oid)
@@ -524,6 +940,7 @@ class VisionProcessor:
         self.objects[oid].axes.set_neutral()
 
     def rename(self, oid: int, name: str) -> None:
+        self.mapping.profile = self.bind_mapping_objects(self.mapping.profile)
         self.objects[oid].name = name[:40]
 
     # ---------------------------------------------------------------- 내부
@@ -533,7 +950,8 @@ class VisionProcessor:
         meas = measure_mask(mask) if mask is not None and out.state.visible else None
         # 트래커가 있으면 보이는 출력에는 항상 pose 가 있어야 한다 (출처 혼용 방지). 없으면 이번 프레임은 건너뛴다.
         if out.state.visible and (self.tracker is None or out.pose is not None):
-            obj.axes.sample(out.pose if self.tracker is not None else None, meas, obj.size0)
+            obj.axes.sample(out.pose if self.tracker is not None else None, meas, obj.size0,
+                            t=self._t_frame, ema=self.ema)
         if mask is not None and out.state.visible and self.desk is not None:
             d = obj.desk_axes.measure(self.desk, mask)
             if d is not None:
@@ -598,9 +1016,10 @@ class VisionProcessor:
             "axes": self._axes(obj),
             "texture": obj.reg.texture,
             "contrast": obj.reg.contrast,
-            "warnings": obj.reg.warnings,
+            "warnings": [*obj.reg.warnings, *(["다른 물체와 겹침: 외형 학습·재분할 보정 일시 보류"] if obj.out.debug.get("overlap_guard") else [])],
             "candidates": len(obj.reg.candidates),
             "candidate_index": obj.reg.candidate_index,
+            "anchor": self._anchor_norm(obj),
             "debug": {k: v for k, v in out.debug.items() if isinstance(v, (int, float, str, bool))},
         }
 
@@ -613,6 +1032,8 @@ class VisionProcessor:
         self.sink.release_all()
         self.mapping.reset()
         self.mouse.gestures.reset()
+        self.mouse.hybrid.reset()
+        self.mouse.hybrid_xy.reset()
         self.mouse.touchpad.reset()
         self.mouse.depth_cursor.reset()
         self.mouse.pen_last = None
@@ -639,7 +1060,7 @@ class VisionProcessor:
                 "calibration": self.calibration_info(),
                 "auto_calibration": None if self.auto_calibration is None else self.auto_calibration.state()}
 
-    def start_auto_calibration(self, kind: str, object_id: int | None = None) -> dict[str, Any]:
+    def start_auto_calibration(self, kind: str, object_id: int | None = None, movement_only: bool = True) -> dict[str, Any]:
         if self.auto_calibration and self.auto_calibration.active:
             raise ValueError('이미 자동 보정 중입니다. 현재 보정을 마치거나 취소하세요.')
         if self.latest is None or self._paused or self.latest.frozen:
@@ -652,11 +1073,10 @@ class VisionProcessor:
         settings = self.mouse.settings
         if kind == 'pen' and settings.mode != 'off' and (settings.mode != 'object' or settings.object_id != object_id):
             raise ValueError('펜을 마우스 대상으로 선택하거나 마우스를 끈 뒤 펜 보정을 시작하세요.')
-        if (kind == 'hand' or kind == 'object' and settings.hand_clicks or
-                kind == 'pen' and settings.mode == 'object' and settings.hand_clicks) and self.hands is None:
+        if (kind == 'hand' or kind == 'object' and settings.hand_clicks and not movement_only) and self.hands is None:
             raise ValueError('손 인식 모델이 필요합니다. 물체 이동만 보정하려면 손 클릭을 끄세요.')
         self.real.off("calibration")
-        self.auto_calibration = AutoCalibration(kind, object_id, settings, self.mouse.touch_surface, self.desk_view, time.monotonic())
+        self.auto_calibration = AutoCalibration(kind, object_id, settings, self.mouse.touch_surface, self.desk_view, time.monotonic(), movement_only=movement_only)
         self._reset_auto_input()
         return self.auto_calibration.state()
 
@@ -672,6 +1092,8 @@ class VisionProcessor:
         self.map_gestures.reset()
         self.mouse._new_cursor()
         self.mouse.gestures.reset()
+        self.mouse.hybrid.reset()
+        self.mouse.hybrid_xy.reset()
         self.mouse.object_tap.reset()
         self.mouse.touchpad.reset()
         self.mouse.depth_cursor.reset()
@@ -709,6 +1131,15 @@ class VisionProcessor:
             if session.pen_surface is not None:
                 pen.surface = session.pen_surface
                 pen.touch_samples = [(s['width'], s['raw_y']) for k in ('touch_near', 'touch_far', 'touch_side') for s in session.data[k]]
+            if pen.floor_mode and session.pen_surface is not None:
+                # 가까운·먼·옆 세 곳의 접촉으로 바닥 평면(앞뒤 그라데이션 + 좌우 기울기)을 정한다
+                touches = []
+                for k in ('touch_near', 'touch_far', 'touch_side'):
+                    rows = [(a['fw'], a['fd'], a['fxn']) for a in session.data.get(k, []) if 'fw' in a]
+                    if rows:
+                        touches.append(tuple(float(np.median([r[i] for r in rows])) for i in range(3)))
+                if len(touches) >= 2:
+                    pen.floor.set_touch_plane(touches)
             if session.pen_contact is not None:
                 pen.overhead_contact = session.pen_contact
             pen.fx, pen.fy = OneEuro(pen.cfg.tip_min_cutoff, pen.cfg.tip_beta), OneEuro(pen.cfg.tip_min_cutoff, pen.cfg.tip_beta)
@@ -741,6 +1172,8 @@ class VisionProcessor:
                 pen = self.pens.get(obj.id)
                 if pen is None or pen.uncertain or pen.tip is None or not math.isfinite(pen.width) or 'raw_y' not in pen.debug:
                     return missing('펜촉이 잘 보이지 않습니다. 펜 전체와 끝이 보이도록 구도와 조명을 조정하세요.')
+                if pen.floor_probe is not None:   # 바닥 평면 보정용 (floor 접촉 판정): 굵기·d·좌우 위치
+                    sample.update(fw=pen.floor_probe[0], fd=pen.floor_probe[1], fxn=pen.floor_probe[2])
                 sample.update(x=pen.debug['raw_x'] / w, y=pen.debug['raw_y'] / h, raw_y=pen.debug['raw_y'],
                               width=pen.width, length=pen.debug.get('len', 1), sharp=pen.debug.get('sharp', 0), log_scale=math.log(max(pen.width, .1)))
             elif obj.out.pose is not None:
@@ -768,26 +1201,18 @@ class VisionProcessor:
             middle_touch = .25 - float(hand.depth[10] - hand.depth[12]) / knuckle if self.desk_view else float(p[12, 1] - p[10, 1]) / knuckle
             e = f.extended
             sample.update(pinch=f.pinch_index, middle=f.pinch_middle, touch=touch, middle_touch=middle_touch,
-                          scroll_pose=e['index'] and e['middle'] and not e['ring'] and not e['pinky'],
+                          scroll_pose=e['index'] and e['middle'] and not e['thumb'] and not e['ring'] and not e['pinky'],
                           scroll=float(f.palm[1]) / f.size, scroll_x=float((p[8, 0] + p[12, 0]) / 2),
                           scroll_y=float((p[8, 1] + p[12, 1]) / 2), log_knuckle=math.log(knuckle))
-            if session.kind == 'object' and session.settings.object_tap:
+            # 검지·중지의 손바닥 축 높이(손 크기 대비)와 끝-물체 거리 (손가락을 든 채 내려 누르는 클릭용)
+            size = max(float(np.linalg.norm(p[9] - p[0])), 1e-4)
+            axis = (p[9] - p[0]) / size
+            sample.update(h_index=float((p[8] - p[5]) @ axis) / size, h_middle=float((p[12] - p[9]) @ axis) / size)
+            for name, tip in (('index', 8), ('middle', 12)):
                 if box is None:
-                    return None
-                candidates = []
-                for hd in hf.hands:
-                    size = float(np.linalg.norm(hd.points[5] - hd.points[17]))
-                    palm = hd.points[[0, 5, 9, 13, 17]].mean(0)
-                    gap = float(np.linalg.norm(palm - np.clip(palm, box[0], box[1])))
-                    if hd.score >= .5 and size > .015 and gap <= 1.5 * size:
-                        candidates.append((float(np.linalg.norm(palm - box.mean(0))) / size, hd, size))
-                if not candidates:
-                    if session.steps[session.index].key.startswith('tap_'):
-                        return missing('물체를 쥔 손과 검지 끝을 찾지 못했습니다. 구도를 바꿔 재검사하거나 이 검사를 건너뛰세요.')
-                    sample['gap'] = 1.
+                    sample['gap_' + name] = 1.
                 else:
-                    _, hd, size = min(candidates, key=lambda a: a[0])
-                    sample['gap'] = float(np.linalg.norm(hd.points[8] - np.clip(hd.points[8], box[0], box[1]))) / size
+                    sample['gap_' + name] = float(np.linalg.norm(p[tip] - np.clip(p[tip], box[0], box[1]))) / size
         return sample
 
 

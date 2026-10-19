@@ -29,7 +29,7 @@ it('guides recording and retries insufficient measurements before applying obser
   fireEvent.click(screen.getByRole('button', { name: '맨손 마우스 자동 보정' }));
   await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
   expect(prepare).toHaveBeenCalledOnce();
-  expect(startAutoCalibration).toHaveBeenCalledWith('hand', null);
+  expect(startAutoCalibration).toHaveBeenCalledWith('hand', null, true);
   expect(screen.getByText('손바닥을 중앙에서 움직이지 말고 유지하세요.')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '측정 시작' }));
   await waitFor(() => expect(autoCalibrationAction).toHaveBeenCalledWith('record', id, 'rest'));
@@ -100,4 +100,11 @@ it('can skip even without recognition and sends the current step to avoid stale 
   fireEvent.click(screen.getByRole('button', { name: '이 검사 건너뛰기' }));
   await waitFor(() => expect(autoCalibrationAction).toHaveBeenCalledWith('skip', id, 'rest'));
   expect(applyAutoCalibration).not.toHaveBeenCalled();
+});
+
+it('lets users opt into click and scroll calibration instead of the quick movement-only default', async () => {
+  render(<AutoCalibration kind="hand" />);
+  fireEvent.click(screen.getByRole('checkbox', { name: '클릭·스크롤도 맞추기 (선택)' }));
+  fireEvent.click(screen.getByRole('button', { name: '맨손 마우스 자동 보정' }));
+  await waitFor(() => expect(startAutoCalibration).toHaveBeenCalledWith('hand', null, false));
 });

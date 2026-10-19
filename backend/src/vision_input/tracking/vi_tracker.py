@@ -16,11 +16,14 @@ import cv2
 import numpy as np
 
 from .api import Box, InitPrompt, Pose, RefinedMask, TrackOutput, TrackState, mask_to_box
+from . import memory_view
 from .kalman import PoseKalman, pose_meas
 from .measure import measure_mask
 from .reacquire import ReacquireConfig, ShapeMemory, make_memory
 from .reacquire import search as reacq_search
+from .scene import SceneConfig, SceneModel
 from .smooth import PoseSmoother, SmoothConfig
+from .still import StillConfig, StillLock
 from .tier0 import (
     UNSEEN_PROB,
     ColorModel,
@@ -78,6 +81,18 @@ class TrackerConfig:
     # 모양 기억 재획득: 놓친(LOST/OCCLUDED) 물체를 화면 전체에서 등록 때 기억한 모양으로 다시 찾는다 (reacquire.py).
     # 추적 중(TRACKING)에는 아무것도 하지 않는다. enabled=False 면 이 기능 이전과 같은 결과.
     reacq: ReacquireConfig = field(default_factory=ReacquireConfig)
+    # 정지 잠금: 멈춘 물체의 포즈·마스크를 붙잡아 측정 잡음과 2초마다 오는 재분할 보정이 밀어내는 것을 막는다 (still.py).
+    still: StillConfig = field(default_factory=StillConfig)
+    # 정지 배경 모델 (scene.py): 배경과 달라진 곳 = 물체·손. 색 + (있으면) 깊이 모델. 펜에는 쓰지 않는다.
+    # enabled=False 면 이전과 같은 결과 (평가 등록부 vi_noscene). 결과: bench/fg/README.md
+    scene: SceneConfig = field(default_factory=SceneConfig)
+    scene_w: float = 0.6             # 영역 마스크에 더하는 배경 모델 로그 오즈 가중치
+    scene_pos_max: float = 4.0       # 그중 '전경' 쪽 근거의 상한 (반사·그림자도 전경이라 넓게 번지지 않게)
+    scene_absent: float = -1.2       # 예측 자리의 평균 로그 오즈가 이보다 낮으면(배경 그대로) 물체가 거기 없다
+    scene_absent_cover: float = 0.6  # 그 판정에 필요한, 배경을 아는 픽셀 비율
+    # Tier 1 마스크 중 배경 그대로인 곳으로 번진 부분을 잘라낸다. 합성 tune 성공률 0.907→0.900 으로 손해라 기본 끔.
+    scene_t1: bool = False
+    scene_refresh: bool = True       # 주기적 재분할 후보 중 배경을 많이 덮은 것을 버린다
 
 
 @dataclass
@@ -121,6 +136,8 @@ class ObjectTrack:
     t1_ref: tuple[float, float, float, float] | None = None
     t1_t: float = 0.0
     distractors: list = field(default_factory=list)  # 같은 색 다른 덩어리 {"x","y","vx","vy","t","miss"}
+    overlap_frac: float = 0.0
+    overlap_until: float = -1.0
     hand_frac: float = 0.0            # 손이 덮은 비율 (amodal 기준)
     hand_c: tuple[float, float] | None = None  # 물체 근처 손 영역 중심 (쥠 결합)
     anchor_mask: np.ndarray | None = None
@@ -129,6 +146,10 @@ class ObjectTrack:
     reacq_next: float = 0.0           # 다음 재획득 탐색 시각
     reacq_hit: tuple[float, float] | None = None  # 직전 재획득 합격 위치 (연속 확인용)
     reacq_hits: int = 0
+    memory_views: list = field(default_factory=list)  # 기억이 기록된 순간의 모습 (memory_view.Snapshot, 보기 전용)
+    still: StillLock | None = None    # 정지 잠금 (일반 물체만; 펜은 펜촉 측정이 따로 있다)
+    scene_fg: float = 0.0             # 확실히 추적 중일 때 물체 마스크의 배경 모델 로그 오즈 평균 (EMA)
+    scene_n: int = 0                  # 그 표본 수. 배경과 뚜렷이 달라 보이는 물체만 '없음' 판정에 쓴다 (유리·저대비 제외)
 
     @property
     def size0(self) -> float:
@@ -147,6 +168,8 @@ class _T1Job:
     results: dict | None = None
     future: object | None = None
     generation: int = 0
+    frame: np.ndarray | None = None            # 작업 프레임 (Tier 1 이 앵커를 저장하면 기억 보기용으로 잘라 둔다)
+    scene: np.ndarray | None = None            # 그 프레임의 배경 모델 로그 오즈 (작업 해상도, 없으면 None)
 
 
 class ViTracker:
@@ -187,6 +210,13 @@ class ViTracker:
         self.refresh_stats = {"jobs": 0, "applied": 0, "rejected": 0, "errors": 0}
         self.refresh_error: str | None = None
         self._generation = 0
+        # 정지 배경 모델 + 깊이. depth_submit(img, t, callback) 은 앱(비동기, DepthService), depth_predict(img) 는 평가(sim, 동기)
+        self.scene = SceneModel(self.cfg.scene)
+        self.depth_submit = None
+        self.depth_predict = None
+        self.depth_latency = 0.06
+        self._depth_pending: list[tuple[float, np.ndarray, float]] = []
+        self._scene_t: float | None = None
 
     def set_occluders(self, mask: np.ndarray | None) -> None:
         """다음 step 에 쓸 손(가리는 것) 영역. None 이면 손 정보 없음 (손 검출이 꺼졌거나 손이 없음).
@@ -201,6 +231,7 @@ class ViTracker:
             tr.t = tr.t_seen = t
             tr.kf.x[4:] = 0
             tr.smoother.reset()
+            self._release_lock(tr, "resume")
         self._generation += 1  # 정지 전 결과는 기다리되 재개 후 포즈에 적용하지 않는다.
 
     def configure_refresh(self, enabled: bool, hz: float) -> None:
@@ -235,7 +266,8 @@ class ViTracker:
             from .segment import default_segmenter
 
             try:
-                m = register(small, default_segmenter(), box=tuple(v * self.k for v in prompt.box)).mask
+                m = register(small, default_segmenter(), box=tuple(v * self.k for v in prompt.box),
+                             scene=self.scene.logit(self.t_prev)).mask
             except RegistrationError:
                 b = np.array(prompt.box) * self.k
                 m = np.zeros((hw, ww), bool)
@@ -243,6 +275,12 @@ class ViTracker:
         meas = measure_mask(m)
         if meas is None:
             raise ValueError("empty mask")
+        if self.scene.cfg.enabled:
+            if self.scene.mean is None:  # 첫 프레임: 물체 밑은 모름으로 두고 배경을 배우기 시작
+                kd = max(3, int(0.4 * meas.size)) | 1
+                self.scene.update(small, self.t_prev or 0.0, cv2.dilate(m.astype(np.uint8), np.ones((kd, kd), np.uint8)) > 0)
+            else:  # 물체가 원래 거기 있었다면 배경에 물체가 배어 있다 → 그 자리를 잊는다
+                self.scene.forget(m)
         color = ColorModel()
         size = meas.size
         color.fit(idx, m, ring_mask(m, int(size * 0.5)))
@@ -252,6 +290,8 @@ class ViTracker:
                          PoseKalman(meas.cx, meas.cy, size), color, m.copy(), sample_points(gray, m, None))
         tr.t = tr.t_seen = self.t_prev or 0.0
         tr.kind = prompt.kind
+        if self.cfg.still.enabled and tr.kind != "pen":
+            tr.still = StillLock(self.cfg.still)
         if tr.kind == "pen":  # 등록 마스크가 첫 정밀 마스크
             full = prompt.mask if prompt.mask is not None else m
             fh, fw = frame.shape[:2]
@@ -267,6 +307,10 @@ class ViTracker:
         tr.p_out0 = float(prob[ring].mean()) if ring.any() else 0.5
         tr.disc0 = float(np.clip(tr.p_in0 - tr.p_out0, 0, 1))
         tr.smoother = PoseSmoother(SmoothConfig(min_cutoff=self.cfg.smooth_min_cutoff, beta=self.cfg.smooth_beta))
+        # 등록은 프레임 시각을 모른다(소스를 막 바꿨으면 t_prev 가 없다). 시각은 다음 step 에서 채운다.
+        memory_view.remember(tr.memory_views, memory_view.capture(
+            small, m, "registration", self.t_prev if self.t_prev is not None else float("nan"),
+            {"area": float(meas.area)}))
         self.tracks[obj_id] = tr
         if self.tam is not None:
             from . import gpu
@@ -303,7 +347,7 @@ class ViTracker:
     def learn_object_colors(self, obj_id: int, idx: np.ndarray, mask: np.ndarray) -> None:
         """신뢰할 수 있는 마스크(등록·Tier 1)로만 물체 색을 갱신한다."""
         tr = self.tracks.get(obj_id)
-        if tr is not None:
+        if tr is not None and tr.t > tr.overlap_until:
             tr.color.fit(idx, mask, None, rate_fg=self.cfg.fg_rate, rate_bg=0.0)
 
     def step(self, frame: np.ndarray, t: float) -> dict[int, TrackOutput]:
@@ -314,10 +358,22 @@ class ViTracker:
                                    interpolation=cv2.INTER_NEAREST).astype(bool)
             self._occ_full = None  # 한 프레임만 유효 (오래된 손 위치를 쓰지 않게)
         prev = self.prev_gray if self.prev_gray is not None and self.prev_gray.shape == gray.shape else gray
+        self._scene_step(small, t)
+        # Detect ambiguous overlap before applying asynchronous appearance corrections.
+        amodal = {o.oid: self._amodal_mask(o) for o in self.tracks.values() if o.state.visible}
+        for tr in self.tracks.values():
+            own = amodal.get(tr.oid)
+            peers = [m for oid, m in amodal.items() if oid != tr.oid and own is not None and m.shape == own.shape]
+            tr.overlap_frac = float((own & np.logical_or.reduce(peers)).sum()) / max(1, int(own.sum())) if own is not None and peers else 0.0
+            if tr.overlap_frac > .18:
+                tr.overlap_until = t + .25
         self._t1_collect(t)  # 도착한 Tier 1 결과를 먼저 반영 (이번 프레임 Tier 0 가 보정된 상태에서 시작)
         self._refresh_collect(t)
         out = {}
         for tr in self.tracks.values():
+            for snap in tr.memory_views:  # 시각을 모르고 등록한 기억은 첫 프레임 시각으로
+                if not math.isfinite(snap.t):
+                    snap.t = t
             # 물체끼리 배타: 다른 물체가 보이는 영역은 이 물체의 점·마스크에서 뺀다 (겹쳤다 갈라질 때 옮겨붙지 않게)
             ms = [o.mask for o in self.tracks.values()
                   if o is not tr and o.state.visible and o.mask.shape == gray.shape]
@@ -333,6 +389,70 @@ class ViTracker:
         self.t_prev = t
         return out
 
+    # ---------------------------------------------------------------- 정지 배경 모델
+    def observe(self, frame: np.ndarray, t: float) -> None:
+        """추적 물체가 없을 때도 배경을 배워 둔다 (등록 전에 빈 책상을 알면 첫 분할·추적이 바로 이득을 본다)."""
+        if not self.scene.cfg.enabled:
+            return
+        small, _, _ = self._prep(frame)
+        self._scene_step(small, t)
+
+    def _scene_step(self, small: np.ndarray, t: float) -> None:
+        sc = self.scene
+        if not sc.cfg.enabled:
+            return
+        ex = None
+        for tr in self.tracks.values():
+            if tr.state == TrackState.LOST:
+                continue  # 놓친 물체의 마지막 자리는 배경으로 다시 배워도 된다 (떠났으면 그곳은 책상이다)
+            if ex is None:
+                ex = np.zeros(small.shape[:2], bool)
+            kd = min(max(3, int(0.4 * tr.size_now())), max(ex.shape)) | 1
+            am = self._amodal_mask(tr)
+            if am.shape != ex.shape:
+                continue
+            ex |= cv2.dilate(am.astype(np.uint8), np.ones((kd, kd), np.uint8)).astype(bool)
+            if tr.mask.shape == ex.shape:
+                ex |= cv2.dilate(tr.mask.astype(np.uint8), np.ones((kd, kd), np.uint8)).astype(bool)
+        if self._occ is not None and self._occ.shape == small.shape[:2]:
+            ex = self._occ.copy() if ex is None else ex | self._occ
+        # sim: 앞서 계산한 깊이가 지연만큼 지났으면 넣는다
+        if self._depth_pending:
+            ready = [p for p in self._depth_pending if p[0] <= t]
+            self._depth_pending = [p for p in self._depth_pending if p[0] > t]
+            for _, d, td in ready:
+                sc.push_depth(d, td)
+        sc.update(small, t, ex)
+        self._scene_t = t
+        if sc.depth_due(t):
+            if self.t1_mode != "async" and self.depth_predict is not None:
+                import time as _time
+                s = _time.perf_counter()
+                try:
+                    d = self.depth_predict(small)
+                    self._depth_pending.append((t + self.depth_latency, d, t))
+                except Exception:
+                    log.exception("depth model failed")
+                    self.depth_predict = None
+                self.offloaded_ms += (_time.perf_counter() - s) * 1000
+            elif self.depth_submit is not None:
+                self.depth_submit(small, t, sc.push_depth)
+
+    def _scene_logit(self, tr: ObjectTrack | None, t: float) -> np.ndarray | None:
+        """이 물체에 쓸 배경 모델 로그 오즈 (작업 해상도). 깊이는 늦게 오므로 그동안 물체가 움직인 만큼 덜 믿는다."""
+        sc = self.scene
+        if not sc.cfg.enabled or not sc.valid or (tr is not None and tr.kind == "pen"):
+            # 펜은 쓰지 않는다: 가늘고 늘 손에 붙어 있어 배경 차분의 경계 오차가 펜 폭과 비슷하다.
+            # 실영상 접촉 F1 이 떨어졌다 (pen_test 0.924→0.901/0.789, IMG_0002 0.774→0.647/0.611, 색/색+깊이).
+            return None
+        wd = 0.0
+        age = sc.depth_age(t)
+        if age is not None and tr is not None:
+            v = math.hypot(float(tr.kf.x[4]), float(tr.kf.x[5]))
+            wd = float(np.clip(1.0 - v * max(age, 0.0) / (0.15 * max(tr.size_now(), 1.0)), 0.0, 1.0))
+            wd = round(wd * 4) / 4  # 캐시가 잘 맞게
+        return sc.logit(t, wd)
+
     # ---------------------------------------------------------------- Tier 1 연동
     def _t1_submit(self, small: np.ndarray, idx: np.ndarray, t: float) -> None:
         if self.tam is None or not self.tracks or self.refresh_job is not None:
@@ -345,14 +465,15 @@ class ViTracker:
         if self.t1_mode == "async":
             if any(j.future is not None for j in self.t1_jobs):
                 return  # 이전 작업이 아직 도는 중: 항상 최신 프레임만
-            job = _T1Job(t, poses, idx, generation=self._generation)
-            job.future = gpu.submit(self.tam.step, small.copy(), ctx, t)
+            job = _T1Job(t, poses, idx, generation=self._generation, frame=small.copy(), scene=self.scene.logit(t))
+            job.future = gpu.submit(self.tam.step, job.frame, ctx, t)  # GPU 스레드는 읽기만 한다
             self.t1_jobs.append(job)
         else:  # sim: 결정적 평가. 지금 계산하고, 실측 지연만큼 뒤에 반영한다
             if t < self.t1_next:
                 return
             lat = (self.cfg.tier1_base_ms + self.cfg.tier1_obj_ms * len(ctx)) / 1000.0
-            job = _T1Job(t, poses, idx, ready_t=t + lat, generation=self._generation)
+            job = _T1Job(t, poses, idx, ready_t=t + lat, generation=self._generation, frame=small,
+                         scene=self.scene.logit(t))
             import time as _time
             s = _time.perf_counter()
             job.results = gpu.run(self.tam.step, small, ctx, t)
@@ -389,6 +510,12 @@ class ViTracker:
                     self._t1_fuse(tr, r, job)
                     if tr.kind == "pen":
                         self._t1_keep_refined(tr, r, job, pre)
+                    if getattr(r, "anchored", False) and job.frame is not None and t > tr.overlap_until and job.t > tr.overlap_until:
+                        from .tier1 import logits_to_mask
+                        H, W = job.frame.shape[:2]
+                        memory_view.remember(tr.memory_views, memory_view.capture(
+                            job.frame, logits_to_mask(r.mask_logits, (W, H)), "anchor", job.t,
+                            {"iou": float(r.iou), "object_score": float(r.object_score)}))
         self.t1_jobs = keep
 
     def _refresh_submit(self, small: np.ndarray, idx: np.ndarray, t: float) -> None:
@@ -400,7 +527,7 @@ class ViTracker:
         from .segment import default_segmenter
         anchors, poses = {}, {}
         for tr in self.tracks.values():
-            if tr.hand_frac > .35 or tr.anchor_mask is None or tr.anchor_color is None:
+            if t <= tr.overlap_until or tr.hand_frac > .35 or tr.anchor_mask is None or tr.anchor_color is None:
                 continue  # 가림 프레임으로 기준 외형을 오염시키지 않는다.
             prior = self._amodal_mask(tr)
             forbidden = np.zeros_like(prior)
@@ -409,7 +536,9 @@ class ViTracker:
             for other in self.tracks.values():
                 if other is not tr and other.state.visible:
                     forbidden |= other.mask
-            anchors[tr.oid] = RefreshAnchor(prior.copy(), forbidden, tr.anchor_mask, tr.anchor_color, tr.p_in0)
+            slg = self._scene_logit(tr, t) if self.cfg.scene_refresh else None
+            anchors[tr.oid] = RefreshAnchor(prior.copy(), forbidden, tr.anchor_mask, tr.anchor_color, tr.p_in0,
+                                            None if slg is None else slg.copy())
             poses[tr.oid] = tr.kf.pose
         self.refresh_next = t + 1 / max(self.refresh_effective_hz, .01)
         if not anchors:
@@ -455,7 +584,7 @@ class ViTracker:
             tr = self.tracks.get(oid)
             if tr is None:
                 continue
-            if result is None or tr.hand_frac > .35:
+            if result is None or t <= tr.overlap_until or tr.hand_frac > .35:
                 self.refresh_stats["rejected"] += 1
                 continue
             mask, confidence = result
@@ -484,6 +613,9 @@ class ViTracker:
                 self.refresh_stats["rejected"] += 1
                 continue
             if tracking:
+                if not self._lock_accepts(tr, "refresh", float(center[0]), float(center[1]), ls, angle):
+                    self.refresh_stats["locked"] = self.refresh_stats.get("locked", 0) + 1
+                    continue
                 # 정상 추적은 관측으로 조금씩 보정한다. 부분 윤곽·쌍둥이 물체로 순간이동하지 않는다.
                 accepted = tr.kf.update(pose_meas(float(center[0]), float(center[1]), ls, angle,
                                                  1. + .05 * size, sigma_ls=.03, sigma_th=3., name="refresh"))
@@ -530,10 +662,19 @@ class ViTracker:
         return RefinedMask(tr.t1_mask, M, max(0.0, tr.t - tr.t1_t))
 
     def _t1_fuse(self, tr: ObjectTrack, r, job: _T1Job) -> None:
+        if tr.t <= tr.overlap_until or job.t <= tr.overlap_until:
+            return  # Do not fuse an appearance captured while two objects overlap.
         from .tier1 import logits_to_mask
 
         H, W = tr.mask.shape
         mask = logits_to_mask(r.mask_logits, (W, H))
+        if (self.cfg.scene_t1 and job.scene is not None and job.scene.shape == mask.shape and tr.kind != "pen"
+                and mask.any()):
+            # 그 프레임에서 배경 그대로였던 곳(책상·벽)으로 번진 부분은 잘라낸다. 대부분이 배경이면 손대지 않는다(판단 보류).
+            bg = mask & (job.scene < -2.5)
+            if 0 < bg.sum() < 0.5 * mask.sum():
+                mask = mask & ~bg
+                tr.debug["t1_trim"] = int(bg.sum())
         present = r.object_score > 0 and r.iou >= 0.4 and mask.sum() >= 6
         tr.debug["t1"] = f"{r.object_score:.1f}/{r.iou:.2f}/{r.motion_iou:.2f}"
         if not present:
@@ -598,6 +739,11 @@ class ViTracker:
         cell = max(W, H) / 128.0
         sig = self.cfg.t1_sigma_k * (0.5 * cell + 0.03 * size) * (1.0 if complete else 4.0) / max(0.5, r.iou)
         sig_ls = 0.02 + 0.6 * cell / max(size, 1.0)
+        if not self._lock_accepts(tr, "t1", meas.cx + dx, meas.cy + dy,
+                                  None if ls_m is None else ls_m + dls, None if th_m is None else th_m + dth):
+            if complete and r.iou >= 0.75 and r.object_score > 2 and 0.85 < vis < 1.2 and r.motion_iou >= 0.5:
+                tr.color.fit(job.idx, mask, ring_mask(mask, int(size * 0.4)), rate_fg=self.cfg.fg_rate, rate_bg=0.1)
+            return
         tr.kf.update(pose_meas(meas.cx + dx, meas.cy + dy,
                                None if ls_m is None else ls_m + dls, None if th_m is None else th_m + dth,
                                sig, sigma_ls=sig_ls, sigma_th=3.0, name="t1"), gate=False)
@@ -720,12 +866,72 @@ class ViTracker:
         tr.t_seen = tr.t
         tr.reacq_hit, tr.reacq_hits = None, 0
         self.t1_stats["reacq_ok"] += 1
+        memory_view.remember(tr.memory_views, memory_view.capture(
+            job["frame"], res.mask, "reacquired", job["t"],
+            {"iou": float(res.score.iou), "hu": float(res.score.hu), "color": float(res.score.color)}))
         if self.tam is not None:  # Tier 1 메모리를 찾은 마스크로 다시 고정
             from . import gpu
             if self.t1_mode == "async":
                 gpu.submit(self.tam.reanchor, tr.oid, job["frame"], res.mask, job["t"])
             else:
                 gpu.run(self.tam.reanchor, tr.oid, job["frame"], res.mask, job["t"])
+
+    def thumbnail(self, obj_id: int) -> str | None:
+        """물체 패널 아이콘용: 등록(다시 선택) 때 기억한 모습. 없는 id 면 KeyError."""
+        reg = [s for s in self.tracks[obj_id].memory_views if s.kind == "registration"]
+        return memory_view.render_icon(reg[-1]) if reg else None
+
+    def forget_memory(self, obj_id: int, items: list[tuple[str, float]], tol: float = 2e-3) -> int:
+        """기억 보기에서 사용자가 체크한 기억(종류, 시각)을 지운다. 등록 모습은 지울 수 없다(기준이므로).
+        AI 앵커·재획득은 그림과 함께 Tier 1 의 해당 조건 프레임도 지운다. 지운 그림 수를 돌려준다. 없는 id 면 KeyError."""
+        tr = self.tracks[obj_id]
+        picked = [(k, t) for k, t in items if k in ("anchor", "reacquired")]
+        drop = [s for s in tr.memory_views if s.kind != "registration"
+                and any(s.kind == k and abs(s.t - t) <= tol for k, t in picked)]
+        for snap in drop:
+            tr.memory_views.remove(snap)
+        if drop and self.tam is not None and hasattr(self.tam, "forget"):
+            from . import gpu
+            gpu.run(self.tam.forget, obj_id, [s.t for s in drop], tol)
+        return len(drop)
+
+    def memory(self, obj_id: int) -> dict:
+        """물체 기억 보기 (엔진 스레드에서 호출). 놓쳤을 때 복귀에 쓰는 기억을 그림·수치로 돌려준다.
+        없는 id 면 KeyError."""
+        from .tier0 import A_BINS, B_BINS, L_BINS
+
+        tr = self.tracks[obj_id]
+        now = self.t_prev if self.t_prev is not None else tr.t
+        shape = tr.shape
+        t1 = None
+        if self.tam is not None:
+            mem = getattr(self.tam, "mem", {}).get(obj_id)
+            if mem is not None:
+                t1 = {"anchors": max(0, len(mem.cond) - 1), "recent": len(mem.non_cond),
+                      "max_anchors": getattr(self.tam, "max_anchors", None)}
+        return {
+            "id": obj_id,
+            "state": tr.state.value,
+            "lost_for_s": None if tr.state.visible else round(max(0.0, now - tr.t_seen), 2),
+            "snapshots": memory_view.describe(tr.memory_views, now),
+            "shape": None if shape is None else {
+                "template": memory_view.render_template(shape.template),
+                "elongation": round(float(shape.elongation), 2), "area": round(float(shape.area), 1),
+                "hu": [round(float(v), 3) for v in shape.hu[:2]],
+                "palette": memory_view.palette(shape.color, L_BINS, A_BINS, B_BINS)},
+            "tier1": t1,
+            "still": None if tr.still is None else {
+                "locked": tr.still.locked, "locks": tr.still.stats.locks, "committed": tr.still.stats.committed,
+                "releases": dict(tr.still.stats.releases), "rejected": dict(tr.still.stats.rejected)},
+            "scene": None if not self.scene.cfg.enabled else {
+                **self.scene.info(), "used": tr.kind != "pen",
+                "object_contrast": round(tr.scene_fg, 2) if tr.scene_n else None},
+            "reacquire": {"enabled": self.cfg.reacq.enabled and self.tam is not None,
+                          "last": tr.debug.get("reacq"), "searches": self.t1_stats["reacq"],
+                          "recovered": self.t1_stats["reacq_ok"],
+                          "thresholds": {"iou": self.cfg.reacq.min_iou, "hu": self.cfg.reacq.max_hu,
+                                         "color": self.cfg.reacq.min_color}},
+        }
 
     def close(self) -> None:
         """하네스·서버 종료 시 대기 중 작업을 기다린다 (GPU 스레드가 죽은 객체를 만지지 않게)."""
@@ -740,11 +946,37 @@ class ViTracker:
         self.t1_jobs.clear()
         self._reacq_jobs.clear()
 
+    # ---------------------------------------------------------------- 정지 잠금
+    def _release_lock(self, tr: ObjectTrack, reason: str) -> None:
+        """잠금을 풀고, 곧바로 움직임을 따라갈 수 있게 위치 불확실성을 되돌린다."""
+        lock = tr.still
+        if lock is None or not lock.release(reason):
+            return
+        floor = (self.cfg.still.release_sigma * tr.size_now()) ** 2
+        for i in (0, 1):
+            tr.kf.P[i, i] = max(tr.kf.P[i, i], floor)
+
+    def _lock_accepts(self, tr: ObjectTrack, src: str, cx: float, cy: float, ls: float | None,
+                      th: float | None) -> bool:
+        """잠긴 동안 들어온 측정을 받을지. 잡음 수준이면 버리고, 벗어남이 연속 확인되면 풀고 받는다."""
+        lock = tr.still
+        if lock is None or not lock.locked:
+            return True
+        pcx, pcy, pls, pth = tr.kf.pose
+        ok = lock.accept(src, math.hypot(cx - pcx, cy - pcy), None if ls is None else ls - pls,
+                         None if th is None else ((th - pth + 180) % 360 - 180), tr.size_now())
+        if ok:
+            self._release_lock(tr, f"measure:{src}")
+        return ok
+
     # ---------------------------------------------------------------- 한 물체
     def _step_one(self, tr: ObjectTrack, prev: np.ndarray, gray: np.ndarray, idx: np.ndarray, t: float) -> None:
         cfg = self.cfg
         dt = max(1e-3, t - tr.t) if tr.t else 1 / 30
         tr.t = t
+        lock = tr.still
+        if lock is not None and lock.locked and (tr.teleported or tr.state != TrackState.TRACKING):
+            self._release_lock(tr, "teleport" if tr.teleported else "state")  # 순간이동·가림: 더는 정지가 아니다
         occluded = tr.state in (TrackState.OCCLUDED, TrackState.LOST, TrackState.SEARCHING)
         cx0, cy0, ls0, th0 = tr.kf.pose
         tr.kf.predict(dt, damping=4.0 if occluded else 0.0)
@@ -773,6 +1005,7 @@ class ViTracker:
             motion = track_points(prev, gray, tr.points, guess, size)
         lk_ok = motion.M is not None and motion.inliers >= max(5, 0.2 * motion.sampled)
         lk_conf = 0.0
+        calm_now = False
         sep = tr.disc0  # 등록 시점 국소 대비: 색이 이 물체를 주변과 구분해 주는가
         pts_obj = 1.0
         if lk_ok and len(motion.points):
@@ -794,23 +1027,47 @@ class ViTracker:
             # 정지 판정 (zero-velocity update): 추정 잡음 수준 이하의 움직임은 0 으로 본다.
             # 그대로 쓰면 가만히 있어도 잡음이 매 프레임 쌓여 중심이 떠다닌다 (random walk).
             moved = math.hypot(c[0] - cx0, c[1] - cy0)
-            if moved < cfg.still_px and abs(math.log(s)) < cfg.still_scale and abs(ang) < cfg.still_deg:
+            raw_move = np.array([c[0] - cx0, c[1] - cy0, math.log(s), ang])
+            calm = moved < cfg.still_px and abs(math.log(s)) < cfg.still_scale and abs(ang) < cfg.still_deg
+            calm_now = calm
+            if calm:
                 c, s, ang = np.array([cx0, cy0]), 1.0, 0.0
                 tr.still_frames += 1
             else:
                 tr.still_frames = 0
             lk_conf = min(1.0, motion.inliers / 12) * min(1.0, motion.ratio / 0.6) * min(1.0, pts_obj / 0.7)
             sig = (0.6 + 2.5 * (1 - lk_conf)) * max(1.0, size / 100)
+            if lock is not None:
+                lock_sig = None
+                if not calm:
+                    self._release_lock(tr, "motion")
+                elif lock.locked:
+                    # 잠김: 조용한 이동은 누적했다가 잡음 수준을 넘으면 그만큼만 반영한다. 아니면 위치를 그대로 두고
+                    # 불확실성도 키우지 않는다 (키우면 필터 이득이 줄지 않아 다른 측정의 잡음이 그대로 들어온다).
+                    step = lock.integrate(raw_move, size)
+                    if step is not None:
+                        c = np.array([cx0 + step[0], cy0 + step[1]])
+                        s, ang = math.exp(step[2]), step[3]
+                        tr.mask = warp_mask(tr.mask, np.array([[1, 0, step[0]], [0, 1, step[1]]], np.float64))
+                    lock_sig = np.array([0.05, 0.05, 0.002, 0.1])
             # 점 추적은 "프레임 간 상대 이동"이므로 측정이 아니라 예측(프로세스)으로 쓴다.
             # 절대 측정처럼 넣으면 필터가 누적 드리프트를 과신해 Tier 1 의 절대 보정이 묻힌다.
-            tr.kf.propagate(np.array([c[0], c[1], ls0 + math.log(s), th0 + ang]), dt,
-                            np.array([sig, sig, 0.01 + 0.04 * (1 - lk_conf), 0.5 + 3 * (1 - lk_conf)]))
+            prop_sig = np.array([sig, sig, 0.01 + 0.04 * (1 - lk_conf), 0.5 + 3 * (1 - lk_conf)])
+            if lock is not None and lock_sig is not None:
+                prop_sig = lock_sig
+            tr.kf.propagate(np.array([c[0], c[1], ls0 + math.log(s), th0 + ang]), dt, prop_sig)
+
+        if lock is not None and lock.locked:
+            if hand_frac > cfg.still.max_hand_frac:
+                self._release_lock(tr, "hand")
+            elif not lk_ok and lock.missing_points():
+                self._release_lock(tr, "no_points")
 
         # 1') 쥠 결합: 손이 물체를 크게 덮었는데 점 추적이 없으면, 물체 근처 손 영역 중심의 움직임으로 포즈를 옮긴다.
         # 물체를 쥔 손은 물체와 함께 움직인다 (강체 결합 가정). 불확실성은 점 추적보다 크게 둔다.
         coupled = False
         if occ is not None and hand_frac >= 0.3 and cfg.hand_coupling:
-            kd0 = max(3, int(0.3 * size)) | 1
+            kd0 = min(max(3, int(0.3 * size)), max(occ.shape)) | 1
             near = cv2.dilate(self._amodal_mask(tr).astype(np.uint8), np.ones((kd0, kd0), np.uint8)).astype(bool) & occ
             ys_h, xs_h = np.nonzero(near)
             if xs_h.size > 20:
@@ -835,21 +1092,43 @@ class ViTracker:
         x1 = int(max(0, corners[:, 0].min() - margin)); x2 = int(min(W, corners[:, 0].max() + margin))
         y1 = int(max(0, corners[:, 1].min() - margin)); y2 = int(min(H, corners[:, 1].max() + margin))
         region_conf, vis_frac, agree = 0.0, 0.0, 0.0
+        scene_absent = False
+        slg = None
         new_mask = np.zeros_like(tr.mask)
         if x2 - x1 > 4 and y2 - y1 > 4:
             # 형태 제약: 보이는 마스크는 등록 모양을 현재 포즈에 놓은 영역(+여유)을 넘을 수 없다.
             # 쥔 손·팔이 물체와 색이 비슷해도 마스크가 번지지 않는다 (물체는 대체로 강체).
             amodal = self._amodal_mask(tr)
-            kd = max(3, int(size_q * cfg.shape_slack)) | 1
+            kd = min(max(3, int(size_q * cfg.shape_slack)), max(H, W)) | 1
             allowed = cv2.dilate(amodal.astype(np.uint8), np.ones((kd, kd), np.uint8)).astype(bool)
             # 사전 = 등록 모양을 현재 포즈에 놓은 것 (amodal). 직전 마스크를 누적 워프하면 조금씩 깎여 줄어든다.
             # 보이는 마스크 = amodal 중 물체 색인 곳 → 가리는 것(물체에서 본 적 없는 색)이 빠진다.
             prior = amodal[y1:y2, x1:x2]
             prob = tr.color.prob(idx[y1:y2, x1:x2])
             w_color = 0.6 + 1.0 * tr.disc0
+            slg = self._scene_logit(tr, t)
+            slg_roi = None if slg is None or slg.shape != gray.shape else slg[y1:y2, x1:x2]
             if prior.sum() >= 6:
-                m_roi, agree = refine_mask(prob, prior, size_q, ~allowed[y1:y2, x1:x2], w_color)
+                m_roi, agree = refine_mask(prob, prior, size_q, ~allowed[y1:y2, x1:x2], w_color,
+                                           None if slg_roi is None else np.minimum(slg_roi, cfg.scene_pos_max), cfg.scene_w)
                 new_mask[y1:y2, x1:x2] = m_roi
+            # 배경 모델: 예측 자리가 '아는 배경 그대로' 면 물체는 거기 없다 (화면 밖으로 나감·배경에 붙은 점 추적)
+            if slg_roi is not None and prior.sum() >= 6:
+                pv = prior.copy()
+                if occ is not None:
+                    pv &= ~occ[y1:y2, x1:x2]
+                if self._others is not None:
+                    pv &= ~self._others[y1:y2, x1:x2]
+                vals = slg_roi[pv]
+                if vals.size >= 6:
+                    cover = float((np.abs(vals) > 0.3).mean())
+                    mean_lg = float(vals.mean())
+                    # 주변(ROI)에 예상 크기만 한 전경이 있으면 예측이 늦은 것일 수 있다 (빠른 움직임) → 없다고 하지 않는다
+                    roi_fg = float((slg_roi > 1.0).sum())
+                    expected_px = tr.area0 * math.exp(2 * lsq)
+                    scene_absent = (cover >= cfg.scene_absent_cover and mean_lg < cfg.scene_absent
+                                    and roi_fg < 0.3 * expected_px and tr.scene_n >= 5 and tr.scene_fg > 1.5)
+                    tr.debug["scene"] = round(mean_lg, 2)
             if occ is not None:
                 new_mask &= ~occ
             if self._others is not None:
@@ -879,12 +1158,14 @@ class ViTracker:
                     # 점 추적이 있을 때는 약하게 두고, 정지 떨림은 정지 판정(ZUPT)으로 해결한다.
                     sig = cfg.region_sigma * (1.0 + 6 * (1 - region_conf)) * max(1.0, size_q / 100) \
                         * (3.0 if lk_ok else 1.0)
-                    tr.kf.update(pose_meas(meas.cx, meas.cy, ls_r, th_r, sig,
-                                           sigma_ls=0.03 + 0.1 * (1 - region_conf) + (0.05 if lk_ok else 0),
-                                           sigma_th=3 + 8 * (1 - region_conf), name="region"))
+                    if self._lock_accepts(tr, "region", meas.cx, meas.cy, ls_r, th_r):
+                        tr.kf.update(pose_meas(meas.cx, meas.cy, ls_r, th_r, sig,
+                                               sigma_ls=0.03 + 0.1 * (1 - region_conf) + (0.05 if lk_ok else 0),
+                                               sigma_th=3 + 8 * (1 - region_conf), name="region"))
                 elif region_conf > 0.2 and not lk_ok and not occluded:
                     # 일부만 보임: 위치만 약하게 (보이는 부분 중심은 전체 중심과 다를 수 있음)
-                    tr.kf.update(pose_meas(meas.cx, meas.cy, None, None, 0.35 * size_q, name="region_partial"))
+                    if self._lock_accepts(tr, "region_partial", meas.cx, meas.cy, None, None):
+                        tr.kf.update(pose_meas(meas.cx, meas.cy, None, None, 0.35 * size_q, name="region_partial"))
 
         # 3) 상태 기계
         # 두 신호 중 하나라도 확실하면 보인다 (영역이 조명·배경 때문에 약해도 점 추적이 받쳐 준다).
@@ -892,6 +1173,10 @@ class ViTracker:
         contradiction = sep > 0.35 and region_conf < 0.08 and agree < 0.25
         if contradiction:
             lk_conf *= 0.3
+        if scene_absent:  # 예측 자리가 배경 그대로: 점 추적·색 영역 모두 믿지 않는다
+            lk_conf *= 0.2
+            region_conf = 0.0
+            contradiction = True
         conf = max(lk_conf, region_conf)
         tr.conf = conf
         tr.region_conf = region_conf
@@ -940,8 +1225,19 @@ class ViTracker:
 
         if tr.state == TrackState.TRACKING:
             tr.t_seen = t
-            if new_mask.any():
+            frozen = lock is not None and lock.locked
+            if lock is not None and not frozen:
+                lock.observe(calm_now and lk_ok, new_mask if new_mask.any() else None)
+                if lock.ready(hand_frac=hand_frac, region_conf=region_conf, tracking=True, disagree=tr.t1_disagree):
+                    tr.mask = lock.lock()          # 최근 마스크의 다수결: 윤곽이 깜빡이지 않는 고정 마스크
+                    frozen = True
+            if new_mask.any() and not frozen:
                 tr.mask = new_mask
+            if slg is not None and region_conf > 0.5 and not scene_absent and 0.75 < vis_frac < 1.35 and hand_frac < 0.1:
+                vals = slg[tr.mask] if tr.mask.shape == slg.shape else np.zeros(0)
+                if vals.size >= 6 and float((np.abs(vals) > 0.3).mean()) > 0.6:
+                    tr.scene_fg = float(vals.mean()) if tr.scene_n == 0 else 0.9 * tr.scene_fg + 0.1 * float(vals.mean())
+                    tr.scene_n += 1
             # 점 유지·재표본: 물체 마스크 안 + 물체 색인 곳만 (가리는 손 위의 점은 버린다)
             obj_color = tr.color.prob(idx) > (0.45 if sep > 0.3 else UNSEEN_PROB + 0.1)
             keep = motion.points
@@ -951,7 +1247,8 @@ class ViTracker:
             tr.since_sample += 1
             target = max(20, motion.sampled)
             if len(keep) < cfg.min_points_frac * target or tr.since_sample >= cfg.resample_every:
-                fresh = sample_points(gray, tr.mask, ~obj_color)
+                no_pts = ~obj_color if slg is None or slg.shape != obj_color.shape else ~obj_color | (slg < -2.0)
+                fresh = sample_points(gray, tr.mask, no_pts)
                 keep = fresh if len(keep) < 4 else np.concatenate([keep, fresh])[: max(len(fresh), 150)]
                 tr.since_sample = 0
             tr.points = keep
@@ -959,7 +1256,7 @@ class ViTracker:
             # 포즈가 어긋난 채 배우면 물체를 배경으로, 배경을 물체로 학습해 어긋남이 굳어진다 (실측된 실패).
             # 가리는 손은 "물체에서 본 적 없는 색" 이라 배경 학습 없이도 이미 제외된다.
             # 배경은 색으로 물체가 확실히 확인될 때만 아주 천천히, 물체 색은 신뢰 출처(등록·Tier 1)만.
-            if region_conf > 0.6 and pts_obj > 0.7 and 0.8 < vis_frac < 1.25:
+            if region_conf > 0.6 and pts_obj > 0.7 and 0.8 < vis_frac < 1.25 and not frozen and t > tr.overlap_until:
                 r = ring_mask(tr.mask, int(size_q * 0.4)) & ~self._amodal_mask(tr)
                 tr.color.fit(idx, None, r, rate_bg=cfg.bg_rate)
             # 방해물 기억: 확실히 추적 중일 때 몇 프레임마다 화면 전체의 같은 색 덩어리를 본다
@@ -1086,11 +1383,11 @@ class ViTracker:
             tr.teleported = False
         pose = Pose(scx, scy, math.exp(sls), sth, sasp)
         dbg = dict(tr.debug, reanchored=reanchored, amodal_box=amodal_box, raw_cx=round(raw[0], 2), raw_cy=round(raw[1], 2),
-                   hand_frac=round(tr.hand_frac, 3))
+                   hand_frac=round(tr.hand_frac, 3), overlap_frac=round(tr.overlap_frac, 3), overlap_guard=tr.t <= tr.overlap_until)
         if not tr.state.visible:
             return TrackOutput(tr.state, None, pose, None, tr.conf, dbg)
         state = TrackState.GRASPED if tr.state == TrackState.TRACKING and tr.hand_frac >= 0.5 else tr.state
-        mask_small = tr.mask
+        mask_small = self._completed_mask(tr)
         box_s = mask_to_box(mask_small)
         box = None if box_s is None else tuple(v / k for v in box_s)
         full = None
@@ -1098,6 +1395,19 @@ class ViTracker:
             full = cv2.resize(mask_small.astype(np.uint8), self._full_size, interpolation=cv2.INTER_NEAREST).astype(bool)
         refined = self._refined(tr) if tr.kind == "pen" else None
         return TrackOutput(state, box, pose, full, tr.conf, dbg, refined)  # type: ignore[arg-type]
+
+    def _completed_mask(self, tr: ObjectTrack) -> np.ndarray:
+        """출력용 마스크. 손이 가린 부분은 기억한 모양(amodal)으로 메워, 가려져도 물체 모양이 줄어들지 않게 한다.
+
+        내부 추적(영역 측정·가림 판정)은 '보이는' 마스크를 그대로 쓰고, 이 보정은 출력(마스크·박스)에만 적용한다.
+        손이 절반 이상 덮으면 기억한 모양 전체를 현재 포즈에 놓는다."""
+        occ = self._occ
+        if occ is None or tr.kind == "pen" or tr.hand_frac <= 0.02 or occ.shape != tr.mask.shape:
+            return tr.mask
+        am = self._amodal_mask(tr)
+        if tr.hand_frac >= 0.5:
+            return am | tr.mask
+        return tr.mask | (am & occ)
 
     _full_size: tuple[int, int] | None = None
 

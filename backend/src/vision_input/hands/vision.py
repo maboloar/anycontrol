@@ -67,24 +67,34 @@ class AppleVisionDetector:
     """HandDetector 와 같은 사용법: detect(bgr, t) → HandFrame. 스레드 하나에서만 쓴다."""
 
     def __init__(self, max_hands: int = 2, width: int = 640, min_conf: float = 0.05, min_score: float = 0.3) -> None:
+        import Foundation
+        import objc
         import Quartz
         import Vision
 
-        self._Q, self._V = Quartz, Vision
+        self._objc = objc
+        self._Q, self._V, self._F = Quartz, Vision, Foundation
         self.width, self.min_conf, self.min_score = width, min_conf, min_score
         self._req = Vision.VNDetectHumanHandPoseRequest.alloc().init()
         self._req.setMaximumHandCount_(max_hands)
         self._cs = Quartz.CGColorSpaceCreateDeviceRGB()
 
     def detect(self, bgr: np.ndarray, t: float) -> HandFrame:
+        # 손 스레드는 오래 살아 있고 런루프가 없어 autorelease 객체가 비워지지 않는다. 호출마다 풀을 열고 닫는다.
+        with self._objc.autorelease_pool():
+            return self._detect(bgr, t)
+
+    def _detect(self, bgr: np.ndarray, t: float) -> HandFrame:
         s = time.perf_counter()
         h, w = bgr.shape[:2]
         if w > self.width:
             bgr = cv2.resize(bgr, (self.width, round(h * self.width / w)), interpolation=cv2.INTER_AREA)
         rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
         hh, ww = rgb.shape[:2]
-        data = rgb.tobytes()
-        prov = self._Q.CGDataProviderCreateWithData(None, data, len(data), None)
+        # CGDataProviderCreateWithData 에 파이썬 bytes 를 넘기면 버퍼가 풀리지 않아 호출마다 프레임 한 장(~0.7MB)이 샜다.
+        # NSData(위 autorelease 풀에서 해제) + CFData 공급자로 바꿔 장시간 실행에도 메모리가 늘지 않는다.
+        data = self._F.NSData.dataWithBytes_length_(rgb.tobytes(), rgb.nbytes)
+        prov = self._Q.CGDataProviderCreateWithCFData(data)
         img = self._Q.CGImageCreate(ww, hh, 8, 24, ww * 3, self._cs, self._Q.kCGBitmapByteOrderDefault, prov, None,
                                     False, self._Q.kCGRenderingIntentDefault)
         handler = self._V.VNImageRequestHandler.alloc().initWithCGImage_options_(img, None)

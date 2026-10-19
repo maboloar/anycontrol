@@ -1,0 +1,8 @@
+{
+  "_comment": "EVALUATION ONLY. IMG_0002.MOV (30 fps). Kiro judged contact by inspecting zoomed tip crops (1080p, every 2nd frame) located by pen colour, not by the tracker. Boundaries uncertain by about +-2 frames. Frames before the pen registration (120) are not scored. Low-confidence: motion-blurred or ambiguous tip (lifting/putting down, far tip at the table edge). Not reviewed by a human yet.",
+  "fps": 30,
+  "score_from": 120,
+  "contact_intervals": [[120, 138], [146, 182], [188, 192], [198, 294], [392, 450], [472, 484], [490, 496], [506, 518], [524, 527]],
+  "low_confidence_intervals": [[158, 166], [182, 198], [240, 242], [270, 278], [450, 456], [466, 474], [486, 508], [516, 530]],
+  "ignore_radius": 2
+}

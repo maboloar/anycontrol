@@ -169,11 +169,14 @@ def similarity_params(M: np.ndarray) -> tuple[float, float]:
 
 # ---------------------------------------------------------------- 마스크 정제
 def refine_mask(prob: np.ndarray, prior: np.ndarray, size_px: float, exclude: np.ndarray | None,
-                w_color: float) -> tuple[np.ndarray, float]:
+                w_color: float, scene_logit: np.ndarray | None = None,
+                scene_w: float = 1.0) -> tuple[np.ndarray, float]:
     """prior(워프한 직전 마스크, bool) 와 색 확률을 합쳐 새 마스크.
 
     - prior 경계에서 물체 크기의 ~15% 안쪽은 색과 무관하게 물체 (내부 무늬가 배경색과 비슷해도 구멍이 안 나게)
     - 그 바깥 띠는 색 확률 + 거리 사전확률로 판정
+    - scene_logit(선택): 정지 배경 모델의 전경 로그 오즈 (+ 배경과 달라짐, − 배경 그대로, 0 모름). scene_w 배로 더하고,
+      배경이 확실한 곳(< −2.5)은 사전 안쪽이라도 뺀다 (포즈가 어긋나 사전이 책상에 걸친 경우).
     반환: (마스크, 색 일치도 = prior 안쪽 픽셀 중 색이 물체로 판정된 비율)
     """
     pm = prior.astype(np.uint8)
@@ -185,10 +188,14 @@ def refine_mask(prob: np.ndarray, prior: np.ndarray, size_px: float, exclude: np
     p = np.clip(prob, 0.02, 0.98)
     color_logit = np.log(p / (1 - p))
     logit = prior_logit + w_color * color_logit
+    if scene_logit is not None:
+        logit = logit + scene_w * scene_logit
     # 깊은 안쪽은 물체로 강제하되, 물체에서 본 적 없는 색(손 등 가리는 것, 구멍으로 보이는 배경)은
     # 사전 확률과 무관하게 뺀다. 물체 자신의 무늬 색은 물체 히스토그램에 있으므로 여기서 빠지지 않는다.
     m = (logit > 0) | ((signed > band) & (prob > UNSEEN_PROB + 0.05))
     m &= prob > UNSEEN_PROB + 0.02
+    if scene_logit is not None:
+        m &= scene_logit > -2.5
     if exclude is not None:
         m &= ~exclude
     # 사전 마스크와 겹치는 성분만 (주변 같은 색 물체로 번지지 않게)

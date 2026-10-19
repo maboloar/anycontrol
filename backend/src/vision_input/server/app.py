@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,11 +23,13 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from .dev import make_router as make_dev_router
+from .idle import make_router as make_idle_router
 from .. import PROTOCOL_VERSION, __version__
 from ..capture import CameraSource, FrameSource, SyntheticSource, VideoFileSource
 from ..capture.avf import AVAILABLE as AVF_AVAILABLE
 from ..capture.avf import AVFCameraSource
-from ..capture.devices import list_cameras, select_camera
+from ..capture.devices import CAMERA_PREFER, list_cameras, preferred_camera, select_camera
 from ..config import Settings
 from ..engine import Engine
 from ..pipeline import VisionProcessor
@@ -101,14 +104,11 @@ class PowerBody(BaseModel):
 def resolve_camera_index(index: int) -> int:
     if index >= 0:
         return index
-    cams = list_cameras()
-    for c in cams:
-        if c["is_continuity"]:
-            return int(c["index"])
-    return 0
+    c = preferred_camera([c for c in list_cameras() if not c.get("is_desk_view")])
+    return int(c["index"]) if c else 0
 
 
-def build_source(spec: CameraSpec | SyntheticSpec | FileSpec) -> FrameSource:
+def build_source(spec: CameraSpec | SyntheticSpec | FileSpec, exclude: tuple[str, ...] = ()) -> FrameSource:
     if isinstance(spec, SyntheticSpec):
         return SyntheticSource(spec.width, spec.height, spec.fps, paused=spec.paused)
     if isinstance(spec, FileSpec):
@@ -119,7 +119,7 @@ def build_source(spec: CameraSpec | SyntheticSpec | FileSpec) -> FrameSource:
             # 카메라가 없어도 서버/UI는 열어 영상·합성 소스로 바꿀 수 있게 한다.
             return AVFCameraSource(max(0, spec.index), spec.width, spec.height, spec.fps, spec.mirror,
                                    paused=spec.paused, enabled=spec.enabled)
-        c = select_camera(cameras, spec.index, spec.device_id, spec.desk_view)
+        c = select_camera(cameras, spec.index, spec.device_id, spec.desk_view, exclude)
         desk = c.get('is_desk_view', False)
         return AVFCameraSource(c['index'], 1920 if desk else spec.width, 1440 if desk else spec.height,
                                min(spec.fps, 30) if desk else spec.fps, spec.mirror,
@@ -174,6 +174,7 @@ def create_app(settings: Settings | None = None,
     hub = Hub()
     processor = processor or VisionProcessor(default_tracker_factory())
     segmenter = segmenter or default_segmenter()
+    processor.tip_refiner.segmenter = segmenter   # 손끝 주변 살색 분할 (EfficientTAM)
     engine = Engine(hub, settings.preview, processor, settings.telemetry_hz)
     start_spec = initial_source or CameraSpec(index=settings.camera.index, width=settings.camera.width,
                                               height=settings.camera.height, fps=settings.camera.fps,
@@ -189,21 +190,69 @@ def create_app(settings: Settings | None = None,
         try:
             engine.set_source(await asyncio.to_thread(build_source, start_spec))
             app.state.source_spec = start_spec
-            yield
+            auto_task = asyncio.create_task(objects_router.auto_reseg_loop())   # 재추적·오래 정지 시 자동 분할 재지정
+            fallback_task = asyncio.create_task(camera_fallback_loop())
+            try:
+                yield
+            finally:
+                auto_task.cancel()
+                fallback_task.cancel()
         finally:
             if browser_session is not None:
                 browser_session.close()
             await asyncio.to_thread(engine.stop)
 
+    async def camera_fallback_loop(stall_s: float = 4.0) -> None:
+        """자동 선택(index -1)으로 연 카메라가 stall_s 초 넘게 프레임을 못 보내면(iPhone 잠김·멀어짐 등)
+        그 카메라를 건너뛰고 다음 순서(homese → 17sa → FaceTime HD Camera)로 바꾼다. 사용자가 소스를 고르면 건너뛰기 목록은 비운다."""
+        bad_since: float | None = None
+        while True:
+            await asyncio.sleep(1.0)
+            spec, src = app.state.source_spec, engine.source
+            auto = isinstance(spec, CameraSpec) and spec.index < 0 and not spec.device_id and not spec.desk_view
+            info = src.info() if src is not None else {}
+            if not auto or not spec.enabled or spec.paused or info.get("status") != "error" or not info.get("device_id"):
+                bad_since = None
+                continue
+            now = time.monotonic()
+            bad_since = bad_since or now
+            if now - bad_since < stall_s:
+                continue
+            bad_since = None
+            failed = str(info["device_id"])
+            exclude = (*app.state.camera_exclude, failed)
+            try:
+                target = select_camera(await asyncio.to_thread(list_cameras), -1, None, False, exclude)
+            except ValueError:
+                continue
+            # 자동 연결과 동일한 우선순위 안에서 다음 카메라로 폴백한다.
+            if target["unique_id"] in exclude or not any(w in str(target.get("name", "")).lower() for w in CAMERA_PREFER):
+                continue
+            try:
+                nxt = await asyncio.to_thread(build_source, spec, exclude)
+            except Exception as exc:  # noqa: BLE001 - 다음 카메라를 못 열면 그대로 둔다
+                log.warning("camera fallback failed: %s", exc)
+                continue
+            log.info("camera %s stopped delivering frames; falling back to %s", failed, getattr(nxt, "device_id", "?"))
+            app.state.camera_exclude = exclude
+            await asyncio.to_thread(engine.set_source, nxt)
+
     app = FastAPI(title="AnyControl", version=__version__, lifespan=lifespan,
                   docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.settings, app.state.hub, app.state.engine = settings, hub, engine
+    app.state.camera_exclude = ()
+    app.state.boot_id = uuid.uuid4().hex   # 서버를 다시 켰는지 창이 알 수 있게
+    app.state.browser_auto_open = False    # __main__ 이 브라우저를 자동으로 열면 True
     app.add_middleware(OriginGuard, allowed=settings.allowed_origins())
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts())
 
-    app.include_router(make_router(engine, processor, segmenter))
+    objects_router = make_router(engine, processor, segmenter)
+    app.include_router(objects_router)
+    app.state.objects_router = objects_router
     app.include_router(make_control_router(engine, processor))
     app.include_router(make_mapping_router(engine, processor, profile_store or ProfileStore()))
+    app.include_router(make_dev_router(engine, processor))
+    app.include_router(make_idle_router(engine, processor))
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
@@ -249,6 +298,7 @@ def create_app(settings: Settings | None = None,
             src = await asyncio.to_thread(build_source, spec)
         except Exception as exc:
             raise HTTPException(400, f"cannot build source: {exc}") from exc
+        app.state.camera_exclude = ()
         await asyncio.to_thread(engine.set_source, src)
         app.state.source_spec = spec
         return {"spec": spec.model_dump(), "info": src.info()}
@@ -283,12 +333,25 @@ def create_app(settings: Settings | None = None,
             raise HTTPException(409, "카메라는 일시정지·재생 또는 구도 적용을 사용하세요")
         return await put_source(app.state.source_spec.model_copy(update={"paused": True}))
 
+    @app.post("/api/bye")
+    async def bye(body: dict[str, Any]) -> dict[str, bool]:
+        """브라우저가 창을 닫으며 보내는 신호 (소켓 종료가 늦거나 전달되지 않는 경우 대비). 이 클라이언트를 바로 연결 목록에서 뺀다.
+        소켓이 실제로 끊기지 않았더라도 마지막 클라이언트면 종료 유예 시간이 시작되고, 새로 연결하면 취소된다."""
+        client_id = body.get("client_id")
+        if browser_session is not None and isinstance(client_id, int):
+            browser_session.disconnected(client_id)
+        return {"ok": True}
+
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
         await websocket.accept()
         ch = hub.add()
         if browser_session is not None:
             browser_session.connected(ch.id)
+        # 새로 연 창(fresh=1)이 붙으면 다른 창은 연결을 놓는다. 숨은 예전 탭이 연결을 붙잡아 창을 닫아도 서버가 안 꺼지는 것을 막는다.
+        if websocket.query_params.get("fresh") == "1":
+            for other in hub.others(ch):
+                other.offer_msg(encode_msg("replaced", {}))
 
         async def sender() -> None:
             while True:
@@ -301,7 +364,8 @@ def create_app(settings: Settings | None = None,
         task = asyncio.create_task(sender())
         try:
             await websocket.send_text(encode_msg("hello", {"version": __version__, "protocol": PROTOCOL_VERSION,
-                                                           "client_id": ch.id}))
+                                                           "client_id": ch.id, "boot_id": app.state.boot_id,
+                                                           "browser_auto_open": app.state.browser_auto_open}))
             while True:
                 text = await websocket.receive_text()
                 try:

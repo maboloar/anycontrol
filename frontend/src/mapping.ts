@@ -10,40 +10,42 @@ import type {
   Profile,
   Transform,
 } from "./protocol";
+import { gameFns } from "./gameFunctions";
+import { labels, t } from "./i18n";
 
-export const INPUT_AXIS_LABEL: Record<InputAxis, string> = {
-  x: "좌우",
-  y: "상하",
-  depth: "깊이",
-  angle: "기울기",
-  stretch: "형태",
-  contact: "바닥선",
-  desk_x: "책상 좌우",
-  desk_z: "책상 앞뒤",
-  desk_yaw: "책상 위 회전",
-};
+export const INPUT_AXIS_LABEL: Record<InputAxis, string> = labels({
+  x: ["좌우", "X"],
+  y: ["상하", "Y"],
+  depth: ["깊이", "Depth"],
+  angle: ["기울기", "Tilt"],
+  stretch: ["형태", "Shape"],
+  contact: ["바닥선", "Base line"],
+  desk_x: ["책상 좌우", "Desk X"],
+  desk_z: ["책상 앞뒤", "Desk depth"],
+  desk_yaw: ["책상 위 회전", "Desk rotation"],
+});
 
-export const PAD_AXIS_LABEL: Record<GamepadAxis, string> = {
-  left_x: "왼쪽 스틱 X",
-  left_y: "왼쪽 스틱 Y",
-  right_x: "오른쪽 스틱 X",
-  right_y: "오른쪽 스틱 Y",
-  lt: "왼쪽 트리거 LT",
-  rt: "오른쪽 트리거 RT",
-};
+export const PAD_AXIS_LABEL: Record<GamepadAxis, string> = labels({
+  left_x: ["왼쪽 스틱 X", "Left stick X"],
+  left_y: ["왼쪽 스틱 Y", "Left stick Y"],
+  right_x: ["오른쪽 스틱 X", "Right stick X"],
+  right_y: ["오른쪽 스틱 Y", "Right stick Y"],
+  lt: ["왼쪽 트리거 LT", "Left trigger LT"],
+  rt: ["오른쪽 트리거 RT", "Right trigger RT"],
+});
 
 export const PAD_BUTTON_LABEL: Record<GamepadButton, string> = {
   a: "A", b: "B", x: "X", y: "Y", lb: "LB", rb: "RB", back: "Back", start: "Start", ls: "LS", rs: "RS",
   up: "↑", down: "↓", left: "←", right: "→", home: "Home",
 };
 
-export const MOUSE_LABEL = {
-  move_x: "커서 좌우 속도",
-  move_y: "커서 상하 속도",
-  scroll: "스크롤",
-  left: "왼쪽 버튼",
-  right: "오른쪽 버튼",
-} as const;
+export const MOUSE_LABEL = labels({
+  move_x: ["커서 좌우 속도", "Cursor X speed"],
+  move_y: ["커서 상하 속도", "Cursor Y speed"],
+  scroll: ["스크롤", "Scroll"],
+  left: ["왼쪽 버튼", "Left button"],
+  right: ["오른쪽 버튼", "Right button"],
+});
 
 export const KEY_RE = /^([a-z0-9]|space|enter|tab|escape|backspace|shift|ctrl|alt|meta|arrowup|arrowdown|arrowleft|arrowright|f([1-9]|1[0-2]))$/;
 
@@ -57,6 +59,7 @@ export type OutputKind = "bipolar" | "unipolar" | "digital";
 export function outputKind(o: MapOutput): OutputKind {
   if (o.target === "gamepad_axis") return o.axis === "lt" || o.axis === "rt" ? "unipolar" : "bipolar";
   if (o.target === "mouse") return o.action === "left" || o.action === "right" ? "digital" : "bipolar";
+  if (o.target === "control") return o.kind;
   return "digital";
 }
 
@@ -65,11 +68,13 @@ export function inputLabel(i: MapInput): string {
     case "object":
       return `${i.object} · ${INPUT_AXIS_LABEL[i.axis]}`;
     case "visible":
-      return `${i.object} · 보임`;
+      return `${i.object} · ${t("보임", "visible")}`;
     case "pen":
-      return `${i.object} · 펜촉 닿음`;
+      return `${i.object} · ${t("펜촉 닿음", "tip touching")}`;
     case "hand":
-      return i.gesture === "pinch" ? "손 · 엄지+검지 집기" : "손 · 엄지+중지 집기";
+      return i.gesture === "x" || i.gesture === "y" ? `${t("손 이동", "Hand motion")} ${i.gesture.toUpperCase()}` : i.gesture === "pinch" ? t("손 · 엄지+검지 집기", "Hand · thumb+index pinch") : t("손 · 엄지+중지 집기", "Hand · thumb+middle pinch");
+    case "touch":
+      return `${i.object} · ${t("손가락 닿음", "finger touch")}`;
   }
 }
 
@@ -78,11 +83,13 @@ export function outputLabel(o: MapOutput): string {
     case "gamepad_axis":
       return PAD_AXIS_LABEL[o.axis];
     case "gamepad_button":
-      return `버튼 ${PAD_BUTTON_LABEL[o.button]}`;
+      return `${t("버튼", "Button")} ${PAD_BUTTON_LABEL[o.button]}`;
     case "key":
-      return `키 ${o.key}`;
+      return `${t("키", "Key")} ${o.key}`;
     case "mouse":
       return MOUSE_LABEL[o.action];
+    case "control":
+      return `${t("데모", "Demo")} ${o.name}`;
   }
 }
 
@@ -92,11 +99,13 @@ export function defaultTransform(input: MapInput, output: MapOutput): Transform 
     mode: "absolute", range: [-1, 1], invert: false, deadzone: 0.05, curve: "linear", expo: 0.5,
     on: 0.6, off: 0.4, smoothing_ms: 0, on_lost: "center", lost_ms: 300,
   };
-  if (input.source === "object") {
+  if (input.source === "hand" && (input.gesture === "x" || input.gesture === "y")) {
+    t.range = [-.3, .3]; t.on_lost = "release"; t.lost_ms = 0;
+  } else if (input.source === "object") {
     const r = TYPICAL[input.axis];
     t.range = kind === "bipolar" ? [-r, r] : [0, r];
   } else {
-    t.range = [0, 1];
+    t.range = input.source === "hand" && kind === "bipolar" ? [-1, 1] : [0, 1];
     t.deadzone = 0;
   }
   if (kind === "digital") t.on_lost = "release";
@@ -128,10 +137,13 @@ export function withOutput(m: Mapping, output: MapOutput): Mapping {
 }
 
 export function withInput(m: Mapping, input: MapInput): Mapping {
-  const sameAxis =
-    m.input.source === input.source &&
-    (input.source !== "object" || (m.input.source === "object" && m.input.axis === input.axis));
-  return { ...m, input, transform: sameAxis ? m.transform : defaultTransform(input, m.output) };
+  const motion = (gesture: string) => gesture === "x" || gesture === "y";
+  const sameAxis = m.input.source === input.source &&
+    (input.source === "object" ? m.input.source === "object" && m.input.axis === input.axis
+      : input.source === "hand" ? m.input.source === "hand" && motion(m.input.gesture) === motion(input.gesture) : true);
+  const next = defaultTransform(input, m.output);
+  if (input.source !== "hand") { next.on_lost = m.transform.on_lost; next.lost_ms = m.transform.lost_ms; }
+  return { ...m, input, transform: sameAxis ? m.transform : next };
 }
 
 /** 보여 주며 매핑하기 결과 적용 */
@@ -158,38 +170,32 @@ export function preset(kind: "racing" | "wasd" | "mouse" | "joystick" | "race-st
     ms.push(m);
   };
   const ax = (axis: InputAxis): MapInput => ({ source: "object", object: obj, axis });
-  if (kind === "zombie") {
-    add("충격파", { source: "hand", gesture: "pinch" }, { target: "gamepad_button", button: "a" });
-    return { version: 1, name: "좀비 위치 대응", description: "물체 마우스 위치 = 캐릭터 위치 · 엄지+검지 = 충격파", mappings: ms };
-  }
-  if (kind === "joystick" || kind === "race-stick") {
-    add("좌우 이동", ax(desk ? "desk_x" : "x"), { target: "gamepad_axis", axis: "left_x" }, { range: [-.2, .2], deadzone: .08, curve: "expo", expo: .25 });
-    if (kind === "joystick") {
-      add("앞뒤 이동", ax(desk ? "desk_z" : "depth"), { target: "gamepad_axis", axis: "left_y" }, { range: [-.3, .3], invert: true, deadzone: .08, curve: "expo", expo: .25 });
-      add("충격파", { source: "hand", gesture: "pinch" }, { target: "gamepad_button", button: "a" });
-    } else {
-      add("가속", ax("depth"), { target: "gamepad_axis", axis: "rt" }, { range: [0, .4] });
-      add("브레이크", ax("depth"), { target: "gamepad_axis", axis: "lt" }, { range: [-.4, 0], invert: true });
+  if (kind === "racing" || kind === "race-stick" || kind === "zombie") {
+    const game = kind === "zombie" ? "survival" : "race";
+    for (const f of gameFns(game).filter(f => f.id !== "race-steer2")) {
+      const steering = f.id === "race-steer1";
+      const axis = steering ? kind === "racing" ? "angle" : "x" : f.axis;
+      add(f.label(), ax(desk && axis === "x" ? "desk_x" : desk && axis === "depth" ? "desk_z" : axis), f.output,
+        { ...f.transform, ...(steering && axis === "angle" ? { range: [-30, 30] } : {}) });
     }
-    return { version: 1, name: kind === "joystick" ? "게임 조이스틱" : "레이싱 좌우 조향", description: "중립에서 움직인 거리만큼 부드럽게 조작", mappings: ms };
+    return { version: 1, name: game === "race" ? t("레이싱", "Racing") : t("좀비", "Zombies"), description: "", mappings: ms };
   }
-  if (kind === "racing") {
-    add("조향", ax("angle"), { target: "gamepad_axis", axis: "left_x" }, { range: [-45, 45], deadzone: 0.03, curve: "expo", expo: 0.3 });
-    add("가속", ax("depth"), { target: "gamepad_axis", axis: "rt" }, { range: [0, 0.4], deadzone: 0.05 });
-    add("브레이크", ax("depth"), { target: "gamepad_axis", axis: "lt" }, { range: [-0.4, 0], invert: true, deadzone: 0.05 });
-    return { version: 1, name: "레이싱", description: `${obj} 을 핸들처럼 돌려 조향, 앞으로 밀면 가속, 당기면 브레이크`, mappings: ms };
+  if (kind === "joystick") {
+    add(t("좌우 이동", "Move X"), ax(desk ? "desk_x" : "x"), { target: "gamepad_axis", axis: "left_x" }, { range: [-.2, .2] });
+    add(t("앞뒤 이동", "Move Y"), ax(desk ? "desk_z" : "depth"), { target: "gamepad_axis", axis: "left_y" }, { range: [-.3, .3], invert: true });
+    return { version: 1, name: t("일반 게임패드", "Generic gamepad"), description: "", mappings: ms };
   }
   if (kind === "wasd") {
-    add("왼쪽 A", ax("x"), { target: "key", key: "a" }, { range: [-0.2, 0], invert: true, deadzone: 0, on: 0.4, off: 0.25 });
-    add("오른쪽 D", ax("x"), { target: "key", key: "d" }, { range: [0, 0.2], deadzone: 0, on: 0.4, off: 0.25 });
-    add("앞 W", ax("depth"), { target: "key", key: "w" }, { range: [0, 0.4], deadzone: 0, on: 0.4, off: 0.25 });
-    add("뒤 S", ax("depth"), { target: "key", key: "s" }, { range: [-0.4, 0], invert: true, deadzone: 0, on: 0.4, off: 0.25 });
-    return { version: 1, name: "WASD", description: `${obj} 좌우 이동은 A/D, 앞뒤는 W/S`, mappings: ms };
+    add(t("왼쪽 A", "Left A"), ax("x"), { target: "key", key: "a" }, { range: [-0.2, 0], invert: true, deadzone: 0, on: 0.4, off: 0.25 });
+    add(t("오른쪽 D", "Right D"), ax("x"), { target: "key", key: "d" }, { range: [0, 0.2], deadzone: 0, on: 0.4, off: 0.25 });
+    add(t("앞 W", "Forward W"), ax("depth"), { target: "key", key: "w" }, { range: [0, 0.4], deadzone: 0, on: 0.4, off: 0.25 });
+    add(t("뒤 S", "Back S"), ax("depth"), { target: "key", key: "s" }, { range: [-0.4, 0], invert: true, deadzone: 0, on: 0.4, off: 0.25 });
+    return { version: 1, name: "WASD", description: t(`${obj} 좌우 이동은 A/D, 앞뒤는 W/S`, `${obj}: left/right = A/D, forward/back = W/S`), mappings: ms };
   }
-  add("커서 좌우", ax("x"), { target: "mouse", action: "move_x" }, { range: [-0.15, 0.15], deadzone: 0.1, curve: "expo", expo: 0.5 });
-  add("커서 상하", ax("y"), { target: "mouse", action: "move_y" }, { range: [-0.15, 0.15], deadzone: 0.1, curve: "expo", expo: 0.5 });
-  add("클릭", { source: "hand", gesture: "pinch" }, { target: "mouse", action: "left" });
-  return { version: 1, name: "조이스틱 마우스", description: `${obj} 을 조이스틱처럼 기울이면 커서가 그 방향으로 움직임`, mappings: ms };
+  add(t("커서 좌우", "Cursor X"), ax("x"), { target: "mouse", action: "move_x" }, { range: [-0.15, 0.15], deadzone: 0.1, curve: "expo", expo: 0.5 });
+  add(t("커서 상하", "Cursor Y"), ax("y"), { target: "mouse", action: "move_y" }, { range: [-0.15, 0.15], deadzone: 0.1, curve: "expo", expo: 0.5 });
+  add(t("클릭", "Click"), { source: "hand", gesture: "pinch" }, { target: "mouse", action: "left" });
+  return { version: 1, name: t("조이스틱 마우스", "Joystick mouse"), description: t(`${obj} 을 조이스틱처럼 기울이면 커서가 그 방향으로 움직임`, `Tilt ${obj} like a joystick to move the cursor that way`), mappings: ms };
 }
 
 /** 백엔드와 같은 변환 (미리보기·테스트용) */

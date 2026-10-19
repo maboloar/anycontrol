@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applySuggestion, defaultTransform, makeMapping, outputKind, preset, shape, withOutput } from "./mapping";
+import { applySuggestion, defaultTransform, makeMapping, outputKind, preset, shape, withInput, withOutput } from "./mapping";
 
 describe("mapping helpers", () => {
   it("default range follows output kind", () => {
@@ -55,5 +55,19 @@ it('provides analog game joystick profiles separately from mouse and WASD', () =
     { target: 'gamepad_axis', axis: 'left_x' }, { target: 'gamepad_axis', axis: 'left_y' },
   ]);
   expect(p.mappings.some(m => m.output.target === 'key')).toBe(false);
-  expect(preset('zombie', '물체').mappings[0]?.output).toEqual({ target: 'gamepad_button', button: 'a' });
+  expect(preset('zombie', '물체').mappings.map(m => m.output.target)).toEqual(['gamepad_axis', 'gamepad_axis']);   // 실제 좀비 게임 전용 잭
+});
+
+it('switches hand pinches and XY ranges while preserving neutral analog output', () => {
+  const m = makeMapping([], { source: 'hand', gesture: 'pinch' }, { target: 'control', name: 'race.steer1', kind: 'bipolar' });
+  expect(shape(0, m.transform, 'bipolar')).toBe(0);
+  const xy = withInput(m, { source: 'hand', gesture: 'x' });
+  expect(xy.transform.range).toEqual([-.3, .3]); expect(shape(0, xy.transform, 'bipolar')).toBe(0);
+  const pinch = withInput(xy, { source: 'hand', gesture: 'pinch_middle' });
+  expect(pinch.transform.range).toEqual([-1, 1]); expect(shape(0, pinch.transform, 'bipolar')).toBe(0);
+});
+it('keeps an explicit immediate-release policy when changing an object axis', () => {
+  const m = makeMapping([], { source: 'object', object: '#1', axis: 'x' }, { target: 'control', name: 'hockey.x1', kind: 'bipolar' });
+  m.transform.on_lost = 'release'; m.transform.lost_ms = 0;
+  expect(withInput(m, { source: 'object', object: '#1', axis: 'depth' }).transform).toMatchObject({ on_lost: 'release', lost_ms: 0 });
 });

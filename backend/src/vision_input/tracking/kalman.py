@@ -42,6 +42,9 @@ def pose_meas(cx: float, cy: float, ls: float | None, th: float | None,
     return Meas(np.array(z, float), H, np.diag(var), name)
 
 
+LS_MAX = 3.0   # 크기 로그 상태 한계: 등록 크기의 약 1/20~20배. 장면이 갑자기 바뀌어 발산해도 커널·ROI 가 화면을 넘는 거대 배열을 만들지 않게
+
+
 class PoseKalman:
     def __init__(self, cx: float, cy: float, size_px: float, accel_px: float = 900.0,
                  accel_ls: float = 2.0, accel_th: float = 400.0) -> None:
@@ -74,6 +77,11 @@ class PoseKalman:
         self._P_prev_pos = self.P[:4, :4].copy()
         self.x = F @ self.x
         self.P = F @ self.P @ F.T + Q
+        self._bound()
+
+    def _bound(self) -> None:
+        self.x[2] = float(np.clip(self.x[2], -LS_MAX, LS_MAX))
+        self.x[6] = float(np.clip(self.x[6], -4 * LS_MAX, 4 * LS_MAX))
 
     def update(self, m: Meas, gate: bool = True) -> bool:
         """측정을 반영한다. 게이트에 걸리면 False (상태 불변)."""
@@ -93,6 +101,7 @@ class PoseKalman:
         I_KH = np.eye(N) - K @ m.H
         self.P = I_KH @ self.P @ I_KH.T + K @ m.R @ K.T  # Joseph form (수치 안정)
         self.P = 0.5 * (self.P + self.P.T)
+        self._bound()
         return True
 
     def propagate(self, pose: np.ndarray, dt: float, sigma: np.ndarray) -> None:
@@ -109,6 +118,7 @@ class PoseKalman:
         self.P[:4, :4] = self._P_prev_pos + np.diag(sigma**2)
         self.P[:4, 4:] = 0
         self.P[4:, :4] = 0
+        self._bound()
 
     def reset_pose(self, cx: float, cy: float, ls: float, th: float, keep_velocity: bool = False) -> None:
         self.x[:4] = [cx, cy, ls, th]
@@ -117,6 +127,7 @@ class PoseKalman:
         self.P[:4, :] = 0
         self.P[:, :4] = 0
         self.P[:4, :4] = np.diag([4.0, 4.0, 0.004, 4.0])
+        self._bound()
 
     @property
     def pose(self) -> tuple[float, float, float, float]:

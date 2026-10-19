@@ -62,7 +62,7 @@ def features(h: Hand, cfg: GestureConfig) -> HandFeatures:
     d = lambda a, b: float(np.linalg.norm(p[a] - p[b]))  # noqa: E731
     size = max(d(WRIST, MIDDLE_MCP), 1e-4)
     palm = p[[WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP]].mean(0)
-    ext = {}
+    ext = {"thumb": float(np.linalg.norm(p[THUMB_TIP] - palm)) > size}
     for name, tip, pip in (("index", INDEX_TIP, INDEX_PIP), ("middle", MIDDLE_TIP, MIDDLE_PIP),
                            ("ring", RING_TIP, RING_PIP), ("pinky", PINKY_TIP, PINKY_PIP)):
         ext[name] = d(tip, WRIST) > cfg.extend_ratio * d(pip, WRIST)
@@ -126,7 +126,7 @@ class GestureRecognizer:
 
         # 스크롤: 검지·중지 펴고 약지·새끼 접음, 집지 않음
         e = f.extended
-        scroll_pose = e["index"] and e["middle"] and not e["ring"] and not e["pinky"] \
+        scroll_pose = e["index"] and e["middle"] and not e["thumb"] and not e["ring"] and not e["pinky"] \
             and not self.left.down and not self.right.down and f.pinch_index > cfg.pinch_off
         scroll = 0.0
         if scroll_pose:

@@ -1,0 +1,7 @@
+{
+  "_comment": "EVALUATION ONLY - never used by the detector. Contact intervals for pen_test.mov judged visually by inspecting zoomed tip crops frame by frame (60 fps). Transitions are uncertain by about +-2 frames, so frames within `ignore_radius` of a boundary are not scored. 262-305 is a nearly vertical pen whose tip sits inside the hand shadow; it was judged as contact with lower confidence.",
+  "fps": 60,
+  "contact_intervals": [[147, 305], [354, 451], [504, 576]],
+  "low_confidence_intervals": [[262, 305]],
+  "ignore_radius": 2
+}

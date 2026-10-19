@@ -139,7 +139,8 @@ describe("Tutorial", () => {
   it("covers the required topics with unique steps", () => {
     const ids = STEPS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const id of ["caution", "camera", "object", "pen", "hand", "paper", "bye"]) expect(ids).toContain(id);
+    for (const id of ["caution", "object", "objects", "mapping", "demo", "automap", "play", "bye"]) expect(ids).toContain(id);
+    expect(STEPS.filter((s) => s.goal).map((s) => s.goal)).toEqual(["object", "mapping", "demo", "automap"]);
     // 예전 시작 안내(주의사항)의 내용이 튜토리얼에 들어 있다
     render(<Tutorial />);
     for (let i = 0; i < STEPS.findIndex((st) => st.id === "caution"); i++) fireEvent.click(screen.getByText("다음 →"));
@@ -155,9 +156,9 @@ describe("Tutorial", () => {
     expect(screen.getByRole("heading").textContent).toBe(STEPS[1]!.title);
     fireEvent.click(screen.getByText("← 이전"));
     expect(screen.getByRole("heading").textContent).toBe(STEPS[0]!.title);
-    for (let i = 1; i < STEPS.length; i++) fireEvent.click(screen.getByText("다음 →"));
+    for (let i = 1; i < STEPS.length; i++) fireEvent.click(screen.queryByText("다음 →") ?? screen.getByText("이 단계 넘기기"));
     expect(screen.getByRole("heading").textContent).toBe(STEPS[STEPS.length - 1]!.title);
-    expect(screen.getByRole("heading").closest(".tour")?.textContent).toContain("창(탭)을 닫으면 끝");
+    expect(screen.getByRole("heading").closest(".tour")?.textContent).toContain("브라우저 창을 닫으면");
     fireEvent.click(screen.getByText("시작하기"));
     expect(useApp.getState().tourOpen).toBe(false);
     expect(tourSeen()).toBe(true);

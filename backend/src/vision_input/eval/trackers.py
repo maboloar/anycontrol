@@ -157,3 +157,31 @@ def _reacq(**kw):  # type: ignore[no-untyped-def]
 # 모양 기억 재획득 비교용 (vi 는 기본 설정 그대로)
 register("vi_noreacq")(lambda: _vi_cfg(reacq=_reacq(enabled=False))())
 register("vi_reacq")(lambda: _vi_cfg(reacq=_reacq(enabled=True))())
+
+
+# 정지 잠금 비교용: vi 는 기본(잠금 켬), vi_nostill 은 잠금 이전과 같은 동작
+def _nostill():  # type: ignore[no-untyped-def]
+    from ..tracking.still import StillConfig
+    return _vi_cfg(still=StillConfig(enabled=False))()
+
+
+register("vi_nostill")(_nostill)
+
+
+# 정지 배경 모델 비교용: vi 는 기본(색 배경 켬, 평가에서는 깊이 없음), vi_noscene = 배경 모델 이전과 같은 동작,
+# vi_fgd = 색 + 깊이 모델 (Core ML, 없으면 색만; 앱 기본과 같은 조건)
+def _scene_tracker(enabled: bool = True, depth: bool = False, **kw):  # type: ignore[no-untyped-def]
+    from ..tracking.scene import SceneConfig
+    from ..tracking.vi_tracker import TrackerConfig, ViTracker
+
+    tr = ViTracker(TrackerConfig(tier1="sim", scene=SceneConfig(enabled=enabled, depth=depth), **kw))
+    if depth:
+        from .. import depth_model as dm
+        if dm.is_available():
+            tr.depth_predict = dm.DepthModel().predict
+    return tr
+
+
+register("vi_noscene")(lambda: _scene_tracker(False))
+register("vi_fgd")(lambda: _scene_tracker(True, True))
+register("vi_fg_t1")(lambda: _scene_tracker(True, scene_t1=True))

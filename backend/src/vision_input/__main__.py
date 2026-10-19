@@ -97,8 +97,15 @@ def main(argv: list[str] | None = None) -> int:
     def shutdown():
         print("웹앱 연결이 모두 닫혀 AnyControl을 종료합니다.")
         server.should_exit = True
+        # 정상 종료가 카메라·모델 스레드 등에 막혀 멈추면 몇 초 뒤 강제로 끝낸다 (창은 닫혔는데 터미널이 남는 것 방지)
+        import os
+        import threading
+        watchdog = threading.Timer(8.0, lambda: os._exit(0))
+        watchdog.daemon = True
+        watchdog.start()
     session = None if args.keep_alive else BrowserSession(shutdown)
     app = create_app(settings, spec, browser_session=session)
+    app.state.browser_auto_open = not args.no_browser   # 다시 켜면 새 탭이 열리므로 예전 탭은 연결을 놓는다
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=settings.server.port,
                                           log_level=args.log_level, ws_max_size=1 << 20))
     print(f"AnyControl → {url}")

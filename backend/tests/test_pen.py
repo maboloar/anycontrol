@@ -98,7 +98,7 @@ def test_shortened_pen_mask_keeps_rigid_tip_and_lifts_contact():
     p.contact = True
     p.cur = [(0.0, 1.0)] * 5
     p.update(img, _out(cut, None), 1 / 30)
-    assert p.debug["src"] == "rigid"
+    assert p.debug["src"] == "rigid"             # 손의 증거가 없으면 포즈 강체 예측을 그대로 쓴다
     assert np.linalg.norm(p.tip - original) < 5
     assert p.uncertain  # 짧은 가림에서는 획을 유지하되 입력을 차단
     p.update(img, _out(cut, None), .2)

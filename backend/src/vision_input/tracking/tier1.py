@@ -40,6 +40,7 @@ class ObjectMemory:
     non_cond: dict[int, dict] = field(default_factory=dict)   # 최근 좋은 프레임
     next_idx: int = 1
     anchor_scales: list[float] = field(default_factory=list)  # 앵커의 log-scale (등록 = 0)
+    cond_t: dict[int, float] = field(default_factory=dict)    # 앵커 조건 프레임 idx → 프레임 시각 (사용자 삭제용)
     # 자체 움직임 모델 (SAMURAI): Tier 0 와 독립이어야 Tier 0 의 오류를 따라가지 않는다
     boxes: list[tuple[float, tuple[float, float, float, float]]] = field(default_factory=list)  # (t, box 0..1)
     area0: float = 0.0          # 등록 마스크 면적 (정규화)
@@ -143,6 +144,27 @@ class StreamingTAM:
 
     def remove(self, oid: int) -> None:
         self.mem.pop(oid, None)
+
+    def forget(self, oid: int, times: list[float], tol: float = 2e-3) -> int:
+        """사용자가 고른 앵커(조건 프레임)를 지운다. 등록 조건 프레임(0)은 지우지 않는다.
+        times 는 기억 보기의 스냅숏 시각. 지운 개수를 돌려준다. GPU 스레드에서 호출한다."""
+        mem = self.mem.get(oid)
+        if mem is None:
+            return 0
+        n = 0
+        for idx in sorted(k for k in mem.cond if k != 0):
+            ct = mem.cond_t.get(idx)
+            if ct is None or not any(abs(ct - x) <= tol for x in times):
+                continue
+            pos = sorted(k for k in mem.cond if k != 0).index(idx) + 1  # anchor_scales[0] = 등록
+            mem.cond.pop(idx)
+            mem.cond_t.pop(idx, None)
+            if pos < len(mem.anchor_scales):
+                mem.anchor_scales.pop(pos)
+            n += 1
+        if n:
+            mem.non_cond.clear()  # 지운 앵커에 기대 쌓인 최근 메모리도 비워 새로 쌓게 한다
+        return n
     def reanchor(self, oid: int, frame_bgr: np.ndarray, mask: np.ndarray, t: float) -> None:
         """검증된 새 마스크(주기적 재분할)를 조건 프레임으로 넣는다. 등록 조건 프레임은 그대로 두고
         가장 오래된 앵커를 바꾸며, 최근 비조건 메모리는 비운다 (오염됐을 수 있으므로 새 닻에서 다시 쌓는다)."""
@@ -167,6 +189,7 @@ class StreamingTAM:
             if len(mem.anchor_scales) > 1:
                 mem.anchor_scales.pop(1)
         mem.cond[idx] = self._compact(out)
+        mem.cond_t[idx] = float(t)
         mem.anchor_scales.append(0.5 * math.log(max(float(mask.mean()), 1e-6) / max(mem.area0, 1e-6)))
         mem.non_cond.clear()
         mem.next_idx = idx + 1
@@ -243,6 +266,7 @@ class StreamingTAM:
                     mem.cond.pop(oldest)
                     mem.anchor_scales.pop(1)
                 mem.cond[idx] = comp
+                mem.cond_t[idx] = float(t)
                 mem.non_cond.pop(idx, None)
                 mem.anchor_scales.append(ls)
                 anchored = True

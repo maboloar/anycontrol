@@ -38,3 +38,18 @@ def test_two_identical_objects_touch_and_separate_without_swap():
     assert out[1].pose is not None and out[2].pose is not None
     assert abs(out[1].pose.cx - xa) < 20, (out[1].pose.cx, xa)
     assert abs(out[2].pose.cx - xb) < 20, (out[2].pose.cx, xb)
+
+
+def test_overlap_guard_reports_ambiguity_and_prevents_appearance_learning():
+    frame = _frame(170, 200, np.random.default_rng(4))
+    tracker = ViTracker(TrackerConfig(tier1="off"))
+    for oid, x in ((1, 170), (2, 200)):
+        mask = np.zeros((240, 480), bool)
+        mask[90:150, x - 30:x + 30] = True
+        tracker.add(frame, oid, InitPrompt(mask=mask))
+    out = tracker.step(frame, 1 / 30)
+    assert out[1].debug["overlap_guard"] and out[2].debug["overlap_guard"]
+    track = tracker.tracks[1]
+    remembered = track.color.table.copy()
+    tracker.learn_object_colors(1, np.zeros(track.mask.shape, np.int32), track.mask)
+    np.testing.assert_array_equal(track.color.table, remembered)

@@ -16,9 +16,9 @@ def controller(**settings):
     return mouse, sink
 
 
-def test_defaults_use_depth_and_leave_x_unmirrored():
+def test_defaults_use_image_xy_for_hand_and_depth_for_objects():
     s = MouseSettings()
-    assert s.hand_control == "depth" and s.coordinate_mode == "depth" and not s.mirror
+    assert s.hand_control == "air" and s.hand_click_style == "pinch" and s.coordinate_mode == "depth" and not s.mirror
 
 
 def test_object_image_height_does_not_move_y_but_approach_and_retreat_do():
@@ -35,7 +35,7 @@ def test_object_image_height_does_not_move_y_but_approach_and_retreat_do():
 
 
 def test_hand_image_height_does_not_move_y_but_palm_scale_does():
-    c, s = controller(mode="hand", smoothing=10)
+    c, s = controller(mode="hand", hand_control="depth", hand_click_style="pinch", smoothing=10)
     for i, (y, size) in enumerate([(.4, .1), (.6, .1), (.6, .12)]):
         c.update(i / 10, HandFrame(i / 10, [make_hand(.5, y, size)]), None, False)
         if i < 2:

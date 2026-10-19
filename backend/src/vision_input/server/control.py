@@ -26,10 +26,16 @@ class RealBody(BaseModel):
 class TrackingBody(BaseModel):
     input_mirror: bool | None = None
     hand_occlusion: bool | None = None
+    hand_input_enabled: bool | None = None
+    ema: bool | None = None
     segmentation_enabled: bool | None = None
     segmentation_hz: float | None = Field(None, ge=.05, le=2.)
     hand_backend: Literal["vision", "mediapipe"] | None = Field(
         None, description="손 인식 엔진: vision(Apple Vision, 기본) | mediapipe. 실행 중에 바꿀 수 있다")
+
+
+class TouchSettingsBody(BaseModel):
+    object_sensitivity: float | None = Field(default=None, ge=0, le=1)
 
 
 class HandDrawingBody(BaseModel):
@@ -38,6 +44,7 @@ class HandDrawingBody(BaseModel):
 
 class AutoStartBody(BaseModel):
     kind: Literal['hand', 'object', 'pen']
+    movement_only: bool = True
     object_id: int | None = Field(None, ge=1)
 
 
@@ -91,7 +98,7 @@ def make_router(engine: Engine, processor: VisionProcessor) -> APIRouter:
     @r.post('/auto-calibration/start')
     async def start_auto(body: AutoStartBody) -> dict[str, Any]:
         try:
-            return await on_engine(lambda: processor.start_auto_calibration(body.kind, body.object_id))
+            return await on_engine(lambda: processor.start_auto_calibration(body.kind, body.object_id, body.movement_only))
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
@@ -116,6 +123,10 @@ def make_router(engine: Engine, processor: VisionProcessor) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @r.post("/settings/reset")
+    async def reset_settings() -> dict[str, Any]:
+        return await on_engine(processor.reset_settings)
+
     @r.get("/mouse")
     async def get_mouse() -> dict[str, Any]:
         return await on_engine(processor.mouse_info)
@@ -127,10 +138,15 @@ def make_router(engine: Engine, processor: VisionProcessor) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @r.post("/mouse/depth-reference")
+    async def reset_depth_reference() -> dict[str, Any]:
+        """물체 마우스 깊이의 책상 기준을 다시 잡는다 (카메라를 옮겼을 때). 평소에는 천천히 자동으로 따라간다."""
+        return await on_engine(processor.reset_depth_reference)
+
     @r.get("/tracking")
     async def get_tracking() -> dict[str, Any]:
         tracker = processor.tracker
-        return {"input_mirror": processor.input_mirror, "hand_occlusion": processor.hand_occlusion, "hands_available": processor.hands is not None,
+        return {"input_mirror": processor.input_mirror, "hand_occlusion": processor.hand_occlusion, "hand_input_enabled": processor.hand_input_enabled, "ema": processor.ema, "hands_available": processor.hands is not None,
                 **processor.hand_backend_info(),
                 "tier1_mode": getattr(tracker, "t1_mode", "off"),
                 "tier1_stats": getattr(tracker, "t1_stats", {}),
@@ -154,6 +170,15 @@ def make_router(engine: Engine, processor: VisionProcessor) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @r.get("/touch/settings")
+    async def get_touch_settings() -> dict[str, Any]:
+        return await on_engine(processor.touch_settings)
+
+    @r.put("/touch/settings")
+    async def put_touch_settings(b: TouchSettingsBody) -> dict[str, Any]:
+        """터치 민감도 (0..1): 물체 터치(손끝 둘레 마스크가 얼마나 가려져야 하나), 바닥 터치(손끝이 바닥에서 얼마나 가까워야 하나)."""
+        return await on_engine(lambda: processor.set_touch_settings(b.object_sensitivity))
+
     @r.post("/drawing/hand/clear")
     async def clear_hand_drawing() -> dict[str, Any]:
         await on_engine(processor.hand_drawing.clear)
@@ -165,10 +190,14 @@ def make_router(engine: Engine, processor: VisionProcessor) -> APIRouter:
             raise HTTPException(409, "손 인식 모델이 없어 켤 수 없습니다")
 
         def _set():  # type: ignore[no-untyped-def]
+            if b.hand_input_enabled is not None:
+                processor.set_hand_input(b.hand_input_enabled)
             if b.input_mirror is not None:
                 processor.set_input_mirror(b.input_mirror)
             if b.hand_occlusion is not None:
                 processor.hand_occlusion = b.hand_occlusion
+            if b.ema is not None:
+                processor.set_ema(b.ema)
             if b.hand_backend is not None:
                 processor.set_hand_backend(b.hand_backend)
             if b.segmentation_enabled is not None or b.segmentation_hz is not None:

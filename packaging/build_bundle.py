@@ -17,13 +17,13 @@ def build(root: Path, uv_archive: Path, output: Path) -> dict:
         raise ValueError('uv archive checksum does not match official uv 0.12.19 arm64 release')
     version = tomllib.loads((root / 'backend/pyproject.toml').read_text())['project']['version']
     files: dict[str, bytes] = {}
-    for name in ('backend/src', 'third_party/EfficientTAM', 'models', 'frontend/dist'):
+    for name in ('backend/src', 'third_party/EfficientTAM', 'models', 'frontend/dist', 'samples'):
         for path in sorted((root / name).rglob('*')):
             if path.is_file() and '__pycache__' not in path.parts and path.suffix not in ('.pyc', '.pyo'):
                 files[str(path.relative_to(root))] = path.read_bytes()
     for name in ('backend/pyproject.toml', 'packaging/bootstrap.py', 'packaging/uninstall.command.in', 'packaging/requirements-macos-arm64.lock', 'INSTALL.md', 'README.md', 'README-en.md', 'DEVELOPMENT.md', 'THIRD_PARTY.md'):
         files[name] = (root / name).read_bytes()
-    for name in ('models/efficienttam_ti_512x512.pt', 'models/hand_landmarker.task', 'frontend/dist/index.html'):
+    for name in ('models/efficienttam_ti_512x512.pt', 'models/hand_landmarker.task', 'models/DepthAnythingV2SmallF16.mlpackage/Data/com.apple.CoreML/weights/weight.bin', 'frontend/dist/index.html'):
         if not files.get(name): raise ValueError(f'Missing required asset: {name}')
     with tarfile.open(uv_archive) as archive:
         f = archive.extractfile('uv-aarch64-apple-darwin/uv')

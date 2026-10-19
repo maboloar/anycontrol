@@ -1,4 +1,4 @@
-type IconName = "play" | "pause" | "stop" | "virtual" | "real" | "link" | "target" | "reset" | "check" | "tune" | "save" | "key" | "flip" | "power" | "trash";
+type IconName = "play" | "pause" | "stop" | "virtual" | "real" | "link" | "target" | "reset" | "check" | "tune" | "save" | "key" | "flip" | "power" | "trash" | "wrench";
 const paths: Record<IconName, string> = {
   play: "M8 5l11 7-11 7Z", pause: "M8 5v14M16 5v14", stop: "M6 6h12v12H6Z",
   virtual: "M3 4h18v12H3ZM8 20h8M12 16v4", real: "m13 2-8 12h7l-1 8 8-12h-7Z",
@@ -10,6 +10,7 @@ const paths: Record<IconName, string> = {
   key: "M15 8a5 5 0 1 1-10 0 5 5 0 0 1 10 0M13 12l8 8M17 16l3-3",
   flip: "M3 8h18m-4-4 4 4-4 4M21 16H3m4-4-4 4 4 4", power: "M12 2v10M6 5a9 9 0 1 0 12 0",
   trash: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7",
+  wrench: "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z",
 };
 /** Decorative: the button's text remains its accessible name. */
 export function ActionIcon({ name }: { name: IconName }) {

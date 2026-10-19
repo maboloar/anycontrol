@@ -1,0 +1,108 @@
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+Disable torch compile due to unsupported GPU.
+sequence                             success    robust   fp_rate   hijacks recovery_ center_er scale_err    wobble occl_jump    ms_p95
+tune/textured-grasp                    0.362         1         0         0        17     0.077     0.167     0.014         0    17.330
+tune/textured-pull                         1         1         -         0         -     0.026     0.018     0.000         -    19.750
+tune/textured-rotate                       1         1         -         0         -     0.049     0.101     0.001         -    15.770
+tune/textured-fast                         1         1         -         0         -     0.082     0.012     0.008         -    15.470
+tune/textured-full_occlusion           0.912     0.912         0         0         0     0.213     0.262     0.000     0.001    16.610
+tune/textured-exit                     0.928     0.964     0.026         0         8     0.049     0.043     0.075         -    15.810
+tune/textured-twin                     0.953         1         -        10         -     0.042     0.033     0.018         -    16.110
+tune/textured-lighting                     1         1         -         0         -     0.039     0.006     0.000         -    16.170
+tune/textured-reflection                   1         1         -         0         -     0.040     0.018     0.000         -    16.790
+tune/textured-clutter                      1         1         -         0         -     0.028     0.014     0.000         -    18.220
+tune/dark-grasp                            1         1         -         0         -     0.349     0.259     0.008     0.001    18.430
+tune/dark-pull                             1         1         -         0         -     0.039     0.039     0.000         -    18.340
+tune/dark-rotate                           1         1         -         0         -     0.033     0.085     0.000         -    15.910
+tune/dark-fast                             1         1         -         0         -     0.092     0.018     0.012         -    16.520
+tune/dark-full_occlusion               0.991     0.991         0         0         1     0.075     0.180     0.000         0    17.900
+tune/dark-exit                         0.938     0.964     0.054         0         7     0.057     0.053     0.013         -    17.020
+tune/dark-twin                         0.550         1         -        72         -     0.083     0.018     0.013         -    16.530
+tune/dark-lighting                         1         1         -         0         -     0.060     0.161     0.001         -    17.360
+tune/dark-reflection                       1         1         -         0         -     0.034     0.004     0.000         -    17.240
+tune/dark-clutter                          1         1         -         0         -     0.030     0.001     0.000         -    18.760
+tune/light-grasp                           1         1         0         0         0     0.113     0.126     0.011     0.000    17.440
+tune/light-pull                        0.993     0.993         -         0         -     0.029     0.021     0.001         -    18.810
+tune/light-rotate                      0.987         1         -         0         -     0.049     0.127     0.002         -    15.620
+tune/light-fast                            1         1         -         0         -     0.074     0.083     0.009         -    19.950
+tune/light-full_occlusion              0.976     0.976         0         0         3     0.040     0.010     0.036         0    26.290
+tune/light-exit                        0.935     0.972     0.024         0         7     0.066     0.008     0.023         -    22.720
+tune/light-twin                        0.919         1         -        10         -     0.079     0.024     0.007         -    29.310
+tune/light-lighting                        1         1         -         0         -     0.030     0.005     0.000         -    26.820
+tune/light-reflection                  0.940         1         -         0         -     0.043     0.020     0.005         -    19.370
+tune/light-clutter                         1         1         -         0         -     0.034     0.021     0.001         -    20.300
+tune/pen-grasp                         0.980         1         -         0         -     0.203     0.128     0.016     0.002    18.710
+tune/pen-pull                              1         1         -         0         -     0.047     0.029     0.001         -    22.240
+tune/pen-rotate                        0.987         1         -         0         -     0.081     0.141     0.007         -    17.310
+tune/pen-fast                          0.738     0.879         -         0         -     0.334     0.117     0.123         -    19.820
+tune/pen-full_occlusion                0.296     0.552         0         0         3     0.408     0.111     0.209         0    15.730
+tune/pen-exit                          0.816     0.851     0.057         0        21     0.069     0.041     0.007         -    20.780
+tune/pen-twin                          0.886         1         -         7         -     0.073     0.018     0.050         -    21.770
+tune/pen-lighting                          1         1         -         0         -     0.040     0.025     0.001         -    20.530
+tune/pen-reflection                        1         1         -         0         -     0.046     0.070     0.001         -    19.910
+tune/pen-clutter                           1         1         -         0         -     0.030     0.039     0.001         -    22.400
+tune/glass-grasp                       0.174     0.953         -         0         -     0.078     0.100     0.017     0.012    23.380
+tune/glass-pull                            1         1         -         0         -     0.035     0.016     0.000         -    21.590
+tune/glass-rotate                          1         1         -         0         -     0.047     0.085     0.001         -    20.860
+tune/glass-fast                        0.846         1         -         0         -     0.073     0.137     0.025         -    21.340
+tune/glass-full_occlusion              0.920     0.920         0         0         0     0.027     0.137     0.007     0.008    26.800
+tune/glass-exit                        0.904     0.965     0.029         0         8     0.057     0.007     0.021         -    20.650
+tune/glass-twin                        0.691         1         -        51         -     0.037     0.011     0.006         -    21.920
+tune/glass-lighting                    0.980     0.980         -         0         -     0.044     0.022     0.001         -    25.220
+tune/glass-reflection                  0.987     0.987         -         0         -     0.039     0.111     0.003         -    19.700
+tune/glass-clutter                     0.758     0.758         -         0         -     0.096     0.011     0.012         -    20.250
+--------------------------------------------------------------------------------------------------------------------------------------
+MEAN                                   0.907     0.972     0.016       150     6.250     0.078     0.066     0.015     0.002    19.592
+(50 sequences, 185.4s)

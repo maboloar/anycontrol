@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anycontrol-web"
-version = "1.0.0"
+version = "1.8.0"
 description = "AnyControl Web - 카메라로 물체와 손을 추적해 가상 입력으로 매핑하는 로컬 웹앱 백엔드"
 requires-python = ">=3.12"
 # 버전은 고정한다 (재현성·공급망 안전).

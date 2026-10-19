@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from .api import Pose
 from .measure import AngleTracker, MaskMeasure
+from .smooth import SpikeEma
 
 # 주의: pose.aspect 는 등록 대비 비율(1 = 그대로), 마스크 elongation 은 절대 길쭉함.
 # 한 물체는 처음부터 끝까지 같은 출처를 쓰므로 stretch = log(현재/중립) 은 둘 다 올바르다.
@@ -39,8 +40,30 @@ class AxisState:
     neutral: AxisSample | None = None
     last: AxisSample | None = None
     angle: AngleTracker = field(default_factory=AngleTracker)
+    ema_filters: dict[str, SpikeEma] = field(default_factory=dict)
 
-    def sample(self, pose: Pose | None, meas: MaskMeasure | None, size0: float) -> AxisSample | None:
+    def _ema(self, s: AxisSample, t: float) -> AxisSample:
+        """실시간 EMA(튐 억제). 중립을 빼기 전의 절대 값에 적용하므로 중립을 바꿔도 필터를 다시 맞출 필요가 없다."""
+        w, h = self.frame_size
+
+        def f(key: str, v: float | None, scale: float) -> float | None:
+            if v is None:
+                self.ema_filters.pop(key, None)
+                return None
+            flt = self.ema_filters.get(key)
+            if flt is None:
+                flt = self.ema_filters[key] = SpikeEma()
+            return flt(v, t, scale)
+
+        scale = f("scale", math.log(max(s.scale, 1e-6)), 0.01)
+        elong = f("elong", None if not s.elongation else math.log(s.elongation), 0.01)
+        cx, cy = f("cx", s.cx, 0.004 * w), f("cy", s.cy, 0.004 * h)
+        return AxisSample(s.cx if cx is None else cx, s.cy if cy is None else cy,
+                          math.exp(scale if scale is not None else 0.0), f("angle", s.angle, 1.0),
+                          None if elong is None else math.exp(elong), f("bottom", s.bottom_y, 0.004 * h))
+
+    def sample(self, pose: Pose | None, meas: MaskMeasure | None, size0: float,
+               t: float | None = None, ema: bool = False) -> AxisSample | None:
         """출처를 섞지 않는다 (섞으면 값이 튄다).
 
         - 트래커가 pose(가림 포함 전체 물체 추정, 각도는 등록 대비 연속값)를 주면 위치·크기·각도·길쭉함은 모두 pose.
@@ -57,6 +80,10 @@ class AxisState:
             assert meas is not None
             ang = self.angle.update(meas.angle, meas.angle_valid)
             s = AxisSample(meas.cx, meas.cy, meas.size / size0, ang, meas.elongation, bottom)
+        if ema and t is not None:
+            s = self._ema(s, t)
+        else:
+            self.ema_filters.clear()
         self.last = s
         if self.neutral is None:
             self.neutral = s

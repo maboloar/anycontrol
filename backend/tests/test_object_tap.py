@@ -40,12 +40,11 @@ def test_missing_hand_or_object_cancels_armed_tap():
         assert not d.update([hand(True)], BOX, .4, .4)
 
 
-def test_object_mouse_tap_emits_one_click_then_releases():
+def test_object_mouse_no_longer_uses_legacy_index_tap():
+    # 물체 마우스 클릭은 손가락 내림 + 물체 접촉 방식(test_finger_click.py)으로 대체됐다
     sink = VirtualSink()
     c = MouseController(sink)
     c.configure(MouseSettings(mode="object", object_id=1))
     for t, touching in ((0, False), (.1, False), (.2, True), (.3, True), (.5, True)):
         c.update(t, HandFrame(t, [hand(touching)]), (.5, .6), True, obj_box=BOX)
-    events = sink.snapshot()["events"]
-    assert [e["type"] for e in events if e["button"] == "left"] == ["down", "up"]
-    assert not sink.buttons["left"]
+    assert not [e for e in sink.snapshot()["events"] if e["button"] == "left"]

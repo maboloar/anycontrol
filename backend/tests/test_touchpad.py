@@ -30,7 +30,7 @@ def run(c: MouseController, hand: Hand, i: int) -> None:
 def test_quad_touchpad_moves_only_while_contact_and_does_not_jump_on_retouch():
     sink = VirtualSink()
     c = MouseController(sink)
-    c.configure(MouseSettings(mode="hand", hand_control="touchpad", mirror=False, touch_depth_blend=0,
+    c.configure(MouseSettings(mode="hand", hand_click_style="pinch", hand_control="touchpad", mirror=False, touch_depth_blend=0,
                               touch_deadzone=0, touch_sensitivity=1))
     c.set_surface(TouchSurface.quad([[.1, .2], [.9, .2], [.9, .8], [.1, .8]]))
     run(c, contact_hand(.4, .55), 0)
@@ -51,7 +51,7 @@ def test_quad_touchpad_moves_only_while_contact_and_does_not_jump_on_retouch():
 def test_near_camera_moves_up_and_can_be_inverted():
     sink = VirtualSink()
     c = MouseController(sink)
-    c.configure(MouseSettings(mode="hand", hand_control="touchpad", mirror=False, touch_depth_blend=0, touch_deadzone=0))
+    c.configure(MouseSettings(mode="hand", hand_click_style="pinch", hand_control="touchpad", mirror=False, touch_depth_blend=0, touch_deadzone=0))
     c.set_surface(TouchSurface.quad([[.1, .2], [.9, .2], [.9, .8], [.1, .8]]))
     for i in range(3):
         run(c, contact_hand(.5, .55 + .02 * max(0, i - 1)), i)
@@ -65,7 +65,7 @@ def test_near_camera_moves_up_and_can_be_inverted():
 def test_horizontal_line_uses_scale_for_depth():
     sink = VirtualSink()
     c = MouseController(sink)
-    c.configure(MouseSettings(mode="hand", hand_control="touchpad", mirror=False, touch_depth_blend=1,
+    c.configure(MouseSettings(mode="hand", hand_click_style="pinch", hand_control="touchpad", mirror=False, touch_depth_blend=1,
                               touch_deadzone=0))
     c.set_surface(TouchSurface.line([[.1, .6], [.9, .6]]))
     run(c, contact_hand(.5, .65, .1), 0)
@@ -103,7 +103,7 @@ def test_invalid_line_does_not_change_surface():
 def test_slow_movement_accumulates_through_deadzone():
     sink = VirtualSink()
     c = MouseController(sink)
-    c.configure(MouseSettings(mode="hand", hand_control="touchpad", mirror=False, smoothing=10,
+    c.configure(MouseSettings(mode="hand", hand_click_style="pinch", hand_control="touchpad", mirror=False, smoothing=10,
                               touch_depth_blend=0, touch_deadzone=.004))
     c.set_surface(TouchSurface.quad([[.1, .2], [.9, .2], [.9, .8], [.1, .8]]))
     for i in range(30):

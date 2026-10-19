@@ -46,7 +46,7 @@ def test_mouse_global_and_individual_mirrors_compose(local, global_, expected):
 
 
 def test_shadow_veto_only_blocks_new_stroke_and_never_manual_press(monkeypatch):
-    pen = PenTracker((100, 200), (80, 80), PenConfig(shadow_assist=True))
+    pen = PenTracker((100, 200), (80, 80), PenConfig(shadow_assist=True, contact_method='legacy'))
     pen.width = 10
     pen.y_hist.append(200.)
     pen.tip = np.array([100., 200.])

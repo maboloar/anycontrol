@@ -50,4 +50,5 @@ def test_grasped_state_when_hand_covers_most():
     assert out.debug["hand_frac"] > 0.5
     assert out.state.value in ("grasped", "occluded")
     if out.mask is not None:
-        assert not (out.mask & hand).any()  # 손 영역은 물체 마스크에 들어가지 않는다
+        # 손이 가린 부분도 기억한 모양으로 메워 출력한다 (가려져도 마스크가 줄지 않는다)
+        assert out.mask.sum() >= 0.9 * m.sum()

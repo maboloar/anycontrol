@@ -1,0 +1,7 @@
+Image encoder compilation is enabled. First forward pass will be slow.
+Disable torch compile due to unsupported GPU.
+sequence                             success    robust   fp_rate   hijacks recovery_ center_er scale_err    wobble occl_jump    ms_p95
+video/test                                 1         1         -         0         -     0.099         -     0.153         -    13.250
+--------------------------------------------------------------------------------------------------------------------------------------
+MEAN                                       1         1         -         0         -     0.099         -     0.153         -    13.250
+(1 sequences, 272.0s)

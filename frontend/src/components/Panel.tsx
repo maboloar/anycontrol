@@ -1,10 +1,11 @@
 import { ResizeHandle, useResizable } from "./useResizable";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { Info } from "./Info";
+import { t } from "../i18n";
 
 /** 접어도 자식은 유지한다. 추적·그림·설정 상태가 최소화 때문에 초기화되지 않는다. */
-export function Panel({ title, label = title, children, className = "", detail, info, tour }: {
-  title: string; label?: string; children: ReactNode; className?: string; detail?: ReactNode;
+export function Panel({ title, label = title, children, className = "", detail, info, tour, badge }: {
+  title: string; label?: string; children: ReactNode; className?: string; detail?: ReactNode; badge?: ReactNode;
   /** 제목 옆 정보 아이콘(ⓘ)의 설명 */ info?: ReactNode;
   /** 튜토리얼이 가리킬 이름 (data-tour) */ tour?: string;
 }) {
@@ -24,11 +25,11 @@ export function Panel({ title, label = title, children, className = "", detail, 
     setCollapsed(next);
     try { localStorage.setItem(key, next ? "collapsed" : "expanded"); } catch { /* 저장 불가여도 동작 */ }
   };
-  return <section className={`panel ${className} ${collapsed ? "minimized" : ""}`} aria-label={label} data-tour={tour} style={{ ...resize.style, ...(collapsed ? { height: undefined } : {}) }}>
+  return <section className={`panel ${className} ${collapsed ? "minimized" : ""}`} aria-label={t(label, title)} data-tour={tour} style={{ ...resize.style, ...(collapsed ? { height: undefined } : {}) }}>
     <div className="panel-header">
-      <h2>{title}{info && <Info wide>{info}</Info>}{!collapsed && detail && <small>{detail}</small>}</h2>
-      <button type="button" className="minimize" aria-label={`${title} ${collapsed ? "펼치기" : "최소화"}`}
-        aria-expanded={!collapsed} aria-controls={id} onClick={toggle} title={collapsed ? "펼치기" : "한 줄로 최소화"}>
+      <h2>{title}{badge}{info && <Info wide>{info}</Info>}{!collapsed && detail && <small>{detail}</small>}</h2>
+      <button type="button" className="minimize" aria-label={`${title} ${collapsed ? t("펼치기", "expand") : t("최소화", "collapse")}`}
+        aria-expanded={!collapsed} aria-controls={id} onClick={toggle} title={collapsed ? t("펼치기", "Expand") : t("한 줄로 최소화", "Collapse to one line")}>
         {collapsed ? "+" : "−"}
       </button>
     </div>

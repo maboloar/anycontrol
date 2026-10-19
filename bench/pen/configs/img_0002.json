@@ -1,0 +1,8 @@
+{
+  "video": "samples/IMG_0002.MOV",
+  "labels": "bench/pen/labels/img_0002.json",
+  "width": 1280,
+  "tier1": "sim",
+  "register": {"frame": 120, "tip": [350, 680], "tail": [343, 470]},
+  "_note": "손가락이 펜 가운데를 쥐고 있어 펜이 위·아래 두 조각으로 보인다. 펜촉~손가락 아래 조각만 등록한다 (전체 선을 찍으면 위 조각이 선택되어 펜촉을 못 찾는다)."
+}

@@ -55,6 +55,9 @@ class Hub:
         self._clients[ch.id] = ch
         return ch
 
+    def others(self, ch: ClientChannel) -> list[ClientChannel]:
+        return [c for c in self._clients.values() if c is not ch]
+
     def remove(self, ch: ClientChannel) -> None:
         self._clients.pop(ch.id, None)
 

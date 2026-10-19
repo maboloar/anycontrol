@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { t } from "../i18n";
 
 const GAP = 8;
 const MARGIN = 8;
@@ -52,7 +53,7 @@ export function Info({ children, wide = false }: { children: ReactNode; wide?: b
 
   return (
     <>
-      <span ref={ref} className="info" tabIndex={0} role="img" aria-label="도움말" aria-describedby={open ? id : undefined}
+      <span ref={ref} className="info" tabIndex={0} role="img" aria-label={t("도움말", "Help")} aria-describedby={open ? id : undefined}
         onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}
         onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
         onKeyDown={(e) => e.key === "Escape" && setOpen(false)} /* 전파는 막지 않는다: ESC = 긴급 정지 */

@@ -2,11 +2,14 @@ import { Panel } from "./Panel";
 import { useEffect, useState } from "react";
 import { connection } from "../connection";
 import type { FrameState, GamepadAxis, GamepadButton } from "../protocol";
+import { t } from "../i18n";
 
 export interface PadState {
   axes: Record<GamepadAxis, number>;
   buttons: Record<GamepadButton, boolean>;
   keys: string[];
+  /** 데모 조작 요소 값 (매핑 출력 target: control) */
+  controls: Record<string, number>;
   /** true: 실제로 내보낸 값, false: 보기만 모드에서 계산만 한 값 */
   sent: boolean;
 }
@@ -16,13 +19,14 @@ export const ZERO: PadState = {
   buttons: { a: false, b: false, x: false, y: false, lb: false, rb: false, back: false, start: false, ls: false,
     rs: false, up: false, down: false, left: false, right: false, home: false },
   keys: [],
+  controls: {},
   sent: false,
 };
 
 export function padFromState(s: FrameState): PadState {
   const c = s.controller;
-  if (c?.mode === "send") return { axes: c.axes, buttons: c.buttons, keys: c.keys, sent: true };
-  return s.mapping ? { ...s.mapping.computed, sent: false } : ZERO;
+  if (c?.mode === "send") return { axes: c.axes, buttons: c.buttons, keys: c.keys, controls: c.controls ?? {}, sent: true };
+  return s.mapping ? { ...s.mapping.computed, controls: s.mapping.computed.controls ?? {}, sent: false } : ZERO;
 }
 
 /** 매 상태 메시지마다 게임패드 값을 받는다 (60Hz 애니메이션을 React 패널 갱신 주기와 분리). */
@@ -71,7 +75,7 @@ export function GamepadView({ pad, compact = false }: { pad: PadState; compact?:
     </g>
   );
   const view = (
-    <figure className={`gamepad ${pad.sent ? "" : "ghost"}`} aria-label="가상 게임패드">
+    <figure className={`gamepad ${pad.sent ? "" : "ghost"}`} aria-label={t("가상 게임패드", "Virtual gamepad")}>
       <svg viewBox="0 0 320 190" role="img" aria-label={describe(pad)}>
         {trig(20, a.lt, "LT")}
         {trig(240, a.rt, "RT")}
@@ -79,8 +83,8 @@ export function GamepadView({ pad, compact = false }: { pad: PadState; compact?:
         <rect x={230} y={36} width={60} height={10} rx={5} className={`pad-bumper ${b.rb ? "on" : ""}`} />
         <path d="M60 52 Q160 38 260 52 Q312 60 305 130 Q298 185 250 170 Q215 158 200 140 L120 140 Q105 158 70 170 Q22 185 15 130 Q8 60 60 52 Z"
           className="pad-body" />
-        {stick(80, 92, a.left_x, a.left_y, b.ls, "왼쪽 스틱")}
-        {stick(200, 132, a.right_x, a.right_y, b.rs, "오른쪽 스틱")}
+        {stick(80, 92, a.left_x, a.left_y, b.ls, t("왼쪽 스틱", "Left stick"))}
+        {stick(200, 132, a.right_x, a.right_y, b.rs, t("오른쪽 스틱", "Right stick"))}
         {dpad(120, 132)}
         {face(250, 110, b.a, "A", "#57cc99")}
         {face(272, 88, b.b, "B", "#ff5d73")}
@@ -91,14 +95,15 @@ export function GamepadView({ pad, compact = false }: { pad: PadState; compact?:
         <circle cx={160} cy={66} r={8} className={`pad-small ${b.home ? "on" : ""}`} />
       </svg>
       <figcaption className="small">
-        {pad.sent ? "내보내는 중" : "보기만 (출력 안 함)"} · 키 {pad.keys.length ? pad.keys.join(" + ") : "없음"}
+        {pad.sent ? t("내보내는 중", "Sending") : t("보기만 (출력 안 함)", "View only (no output)")} · {t("키", "Keys")} {pad.keys.length ? pad.keys.join(" + ") : t("없음", "none")}
       </figcaption>
     </figure>
   );
-  return compact ? view : <Panel title="가상 게임패드" label="게임패드 패널" className="pad-panel">{view}</Panel>;
+  return compact ? view : <Panel title={t("가상 게임패드", "Virtual gamepad")} label="게임패드 패널" className="pad-panel">{view}</Panel>;
 }
 
 function describe(p: PadState): string {
   const on = Object.entries(p.buttons).filter(([, v]) => v).map(([k]) => k.toUpperCase());
-  return `왼쪽 스틱 ${p.axes.left_x.toFixed(2)}, ${p.axes.left_y.toFixed(2)} · 트리거 ${p.axes.lt.toFixed(2)}/${p.axes.rt.toFixed(2)} · 버튼 ${on.join(", ") || "없음"}`;
+  return t(`왼쪽 스틱 ${p.axes.left_x.toFixed(2)}, ${p.axes.left_y.toFixed(2)} · 트리거 ${p.axes.lt.toFixed(2)}/${p.axes.rt.toFixed(2)} · 버튼 ${on.join(", ") || "없음"}`,
+    `Left stick ${p.axes.left_x.toFixed(2)}, ${p.axes.left_y.toFixed(2)} · Triggers ${p.axes.lt.toFixed(2)}/${p.axes.rt.toFixed(2)} · Buttons ${on.join(", ") || "none"}`);
 }

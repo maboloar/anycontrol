@@ -74,7 +74,7 @@ def _ctl(**kw):
 
 
 def test_hand_mode_maps_region_with_mirror():
-    c, sink = _ctl(mode="hand", hand_control="air", mirror=True, hand_region=[0.2, 0.2, 0.8, 0.8])
+    c, sink = _ctl(mode="hand", hand_click_style="pinch", hand_control="air", mirror=True, hand_region=[0.2, 0.2, 0.8, 0.8])
     for i in range(40):
         h = make_hand(0.2, 0.8, 0.12, pinch=1.0)  # 영역 왼쪽 아래 → 거울이면 화면 오른쪽 아래
         hf = HandFrame(i / 30, [h])
@@ -88,7 +88,7 @@ def test_hand_mode_maps_region_with_mirror():
 
 def test_click_does_not_drag_cursor_while_fingers_close():
     """손가락을 모으는 동안 손바닥이 조금 흔들려도 커서가 따라가지 않는다 (freeze)."""
-    c, sink = _ctl(mode="hand", hand_control="air", mirror=False)
+    c, sink = _ctl(mode="hand", hand_click_style="pinch", hand_control="air", mirror=False)
     t = 0.0
     for i in range(30):
         t = i / 30
@@ -103,7 +103,7 @@ def test_click_does_not_drag_cursor_while_fingers_close():
 
 
 def test_stale_hand_results_are_ignored():
-    c, sink = _ctl(mode="hand", hand_control="air")
+    c, sink = _ctl(mode="hand", hand_click_style="pinch", hand_control="air")
     for i in range(3):
         c.update(i / 30, HandFrame(i / 30, [make_hand(0.5, 0.5, 0.12, pinch=0.2)]), None, False)
     assert sink.buttons["left"]
@@ -123,7 +123,7 @@ def test_object_mode_uses_object_for_cursor_and_pen_contact_as_click():
 
 
 def test_off_mode_and_emergency_stop_release_everything():
-    c, sink = _ctl(mode="hand", hand_control="air")
+    c, sink = _ctl(mode="hand", hand_click_style="pinch", hand_control="air")
     for i in range(3):
         c.update(i / 30, HandFrame(i / 30, [make_hand(0.5, 0.5, 0.12, pinch=0.2)]), None, False)
     assert sink.buttons["left"]
@@ -139,9 +139,12 @@ def test_invalid_regions_rejected(region):
 
 
 def test_needs_hands():
-    assert MouseSettings(mode="hand").needs_hands
-    assert MouseSettings(mode="object", hand_clicks=True).needs_hands
-    assert not MouseSettings(mode="object", hand_clicks=False).needs_hands
+    assert MouseSettings(mode="hand", hand_click_style="pinch").needs_hands
+    # 물체 마우스는 손 추적을 쓰지 않는다: 예전 손 클릭·하이브리드 설정이 켜져 와도 꺼진다
+    assert not MouseSettings(mode="object", hand_clicks=True).needs_hands
+    assert not MouseSettings(mode="object", object_hybrid=True).needs_hands
+    s = MouseSettings(mode="object", hand_clicks=True, object_hybrid=True)
+    assert not s.hand_clicks and not s.object_hybrid
     assert not MouseSettings(mode="off").needs_hands
 
 
@@ -284,3 +287,11 @@ def test_line_registration_creates_pen(client_hands):
     assert c.post(f"/api/objects/{o['id']}/pen/nope").status_code == 404
     assert c.post("/api/objects", json={"line": [0.5, 0.5, 0.505, 0.5]}).status_code == 422  # 너무 짧음
     _ = np  # noqa
+
+
+def test_scrolling_requires_thumb_folded_as_well_as_ring_and_pinky():
+    rec = GestureRecognizer()
+    h = make_hand(.5, .5, .15, scroll_pose=True)
+    assert rec.update(h, 0).gesture == "scroll"
+    h.points[4] = h.points[8] + np.array([-.16, 0])
+    assert rec.update(h, .05).gesture != "scroll"

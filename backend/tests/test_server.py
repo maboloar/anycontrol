@@ -140,13 +140,62 @@ def test_add_list_neutral_candidate_delete(client):
     oid = obj["id"]
     assert [o["id"] for o in client.get("/api/objects").json()] == [oid]
     assert client.post(f"/api/objects/{oid}/neutral").status_code == 200
+    profile = {"name": "candidate", "mappings": [
+        {"id": "keep-map", "input": {"source": "object", "object": f"#{oid}", "axis": "x"},
+         "output": {"target": "gamepad_axis", "axis": "left_x"}}]}
+    assert client.put("/api/mapping", json=profile).status_code == 200
+    before_mapping = client.get("/api/mapping").json()["profile"]
     r2 = client.post(f"/api/objects/{oid}/candidate", json={"index": 1})
     assert r2.status_code == 200 and r2.json()["candidate_index"] == 1
     new_id = r2.json()["id"]
+    assert new_id == oid
+    assert client.get("/api/mapping").json()["profile"] == before_mapping
     assert client.patch(f"/api/objects/{new_id}", json={"name": "지갑"}).json()["name"] == "지갑"
     assert client.delete(f"/api/objects/{new_id}").status_code == 204
     assert client.get("/api/objects").json() == []
     assert client.delete(f"/api/objects/{new_id}").status_code == 404
+
+
+def test_object_memory_endpoint():
+    from vision_input.tracking.vi_tracker import TrackerConfig, ViTracker
+
+    app = create_app(Settings(), SyntheticSpec(width=320, height=240, fps=60), serve_frontend=False, segmenter=RectSeg(),
+                     processor=VisionProcessor(lambda: ViTracker(TrackerConfig(tier1="off"))))
+    with TestClient(app) as c:
+        oid = _wait_frame(c).json()["id"]
+        r = c.get(f"/api/objects/{oid}/memory")
+        assert r.status_code == 200, r.text
+        m = r.json()
+        assert m["id"] == oid and m["name"] and m["snapshots"][0]["kind"] == "registration"
+        assert m["snapshots"][0]["image"].startswith("data:image/jpeg;base64,")
+        assert m["shape"]["template"].startswith("data:image/png;base64,")
+        assert c.get("/api/objects/999/memory").status_code == 404
+
+
+def test_candidate_swap_keeps_object_order(client):
+    ids = [_wait_frame(client).json()["id"]]
+    ids += [client.post("/api/objects", json={"box": b}).json()["id"] for b in ([0.1, 0.1, 0.3, 0.3], [0.6, 0.6, 0.9, 0.9])]
+    assert [o["id"] for o in client.get("/api/objects").json()] == ids
+    new_id = client.post(f"/api/objects/{ids[1]}/candidate", json={"index": 1}).json()["id"]
+    assert new_id == ids[1]
+    assert [o["id"] for o in client.get("/api/objects").json()] == [ids[0], new_id, ids[2]]  # 가운데 자리 유지
+
+
+def test_floor_map_endpoint_404_for_non_pen_and_reports_state_for_pen(client):
+    oid = _wait_frame(client).json()["id"]
+    assert client.get(f"/api/objects/{oid}/pen/floor-map").status_code == 404          # 일반 물체
+    assert client.get("/api/objects/999/pen/floor-map").status_code == 404
+    r = client.post("/api/objects", json={"line": [0.4, 0.3, 0.55, 0.7], "name": "펜"})
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+    m2 = client.get(f"/api/objects/{pid}/pen/floor-map").json()
+    assert m2["ready"] is False and m2["reason"] in ("learning", "no_frame")              # 기본은 floor: 맵을 학습 중
+    assert client.post(f"/api/objects/{pid}/pen/config", json={"contact_method": "legacy"}).status_code == 200
+    m = client.get(f"/api/objects/{pid}/pen/floor-map")
+    assert m.status_code == 200 and m.json() == {"ready": False, "reason": "contact_method"}   # legacy 는 맵 없음
+def test_object_memory_needs_a_tracker(client):
+    oid = _wait_frame(client).json()["id"]
+    assert client.get(f"/api/objects/{oid}/memory").status_code == 409
 
 
 def test_add_by_point_and_state_message(client):

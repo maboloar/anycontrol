@@ -18,7 +18,7 @@ const desk = { ...phone, index: 2, unique_id: 'desk', name: 'Desk View', is_cont
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  useApp.setState({ conn: 'open', telemetry: null });
+  useApp.setState({ conn: 'open', telemetry: null, devMode: true });
   vi.mocked(getSource).mockResolvedValue({ spec: normal });
   vi.mocked(getCameras).mockResolvedValue([phone, desk]);
   vi.mocked(putPlayback).mockImplementation(async (paused) => ({ paused }));
@@ -51,18 +51,16 @@ it('keeps the current source when Desk View is unavailable', async () => {
 it('toggles camera power and playback while mirror uses the current source', async () => {
   render(<SourcePanel />);
   await screen.findByRole('button', { name: '카메라 끄기' });
-  fireEvent.click(screen.getByRole('button', { name: '일시정지' }));
-  await screen.findByRole('button', { name: '재생' });
+  fireEvent.click(screen.getByRole('button', { name: '영상 정지' }));
+  await screen.findByRole('button', { name: '영상 재생' });
   expect(putPlayback).toHaveBeenCalledWith(true);
   fireEvent.click(screen.getByRole('button', { name: '카메라 끄기' }));
   await screen.findByRole('button', { name: '카메라 켜기' });
   expect(putCameraPower).toHaveBeenCalledWith(false);
-  expect((screen.getByRole('button', { name: '재생' }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole('checkbox', { name: '카메라 영상 좌우 반전' }));
-  await waitFor(() => expect(putSource).toHaveBeenCalledWith({ ...normal, paused: true, enabled: false, mirror: false }));
+  expect((screen.getByRole('button', { name: '영상 재생' }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: '카메라 켜기' }));
   await screen.findByRole('button', { name: '카메라 끄기' });
-  fireEvent.click(screen.getByRole('button', { name: '재생' }));
+  fireEvent.click(screen.getByRole('button', { name: '영상 재생' }));
   await waitFor(() => expect(putPlayback).toHaveBeenLastCalledWith(false));
 });
 
@@ -71,11 +69,40 @@ it('controls a developer-provided source without exposing bundled test inputs', 
   vi.mocked(getSource).mockResolvedValue({ spec });
   vi.mocked(restartSource).mockResolvedValue({ spec });
   render(<SourcePanel />);
-  await screen.findByRole('button', { name: '재생' });
+  await screen.findByRole('button', { name: '영상 재생' });
   expect(screen.queryByRole('button', { name: /합성 장면|test\.mov|pen_test/ })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: '재생' }));
-  await screen.findByRole('button', { name: '일시정지' });
+  fireEvent.click(screen.getByRole('button', { name: '영상 재생' }));
+  await screen.findByRole('button', { name: '영상 정지' });
   fireEvent.click(screen.getByRole('button', { name: '처음부터 선택' }));
-  await screen.findByRole('button', { name: '재생' });
+  await screen.findByRole('button', { name: '영상 재생' });
   expect(restartSource).toHaveBeenCalledOnce();
+});
+
+it('shows bundled test videos only after the test video checkbox is checked', async () => {
+  localStorage.removeItem('anycontrol.source.samples');
+  render(<SourcePanel />);
+  await screen.findByRole('button', { name: '카메라 끄기' });
+  expect(screen.queryByRole('button', { name: /test\.mov/ })).toBeNull();
+  fireEvent.click(screen.getByRole('checkbox', { name: '데모 영상 표시' }));
+  expect(screen.getByRole('button', { name: /합성 장면/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /^pen_test\.mov/ }));
+  await waitFor(() => expect(putSource).toHaveBeenLastCalledWith({ kind: 'file', path: 'samples/pen_test.mov', loop: true, paused: true }));
+  localStorage.removeItem('anycontrol.source.samples');
+});
+
+it('shows the preferred 17sa camera in basic mode, hides Desk View and keeps demo videos', async () => {
+  useApp.setState({ devMode: false });
+  vi.mocked(getCameras).mockResolvedValue([phone, { ...phone, index: 3, unique_id: 'p17', name: '17sa Camera' }, desk]);
+  render(<SourcePanel />);
+  await screen.findByText(phone.name);
+  expect(screen.getByText('17sa Camera')).toBeTruthy();
+  expect(screen.queryByRole('checkbox', { name: /Desk View/ })).toBeNull();
+  expect(screen.getByRole('checkbox', { name: '데모 영상 표시' })).toBeTruthy();
+});
+
+it('does not show a separate automatic-camera button', async () => {
+  render(<SourcePanel />);
+  await screen.findByText(phone.name);
+  expect(screen.queryByRole('button', { name: /자동 선택/ })).toBeNull();
+  expect(screen.queryByText(/기본 카메라: homese/)).toBeNull();
 });

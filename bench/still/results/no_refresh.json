@@ -1,0 +1,30 @@
+{
+ "overrides": {
+  "_refresh": false
+ },
+ "scenes": {
+  "synthetic-still": {
+   "frames": 285,
+   "visible_frac": 1.0,
+   "pose_std_px": 0.212,
+   "pose_path_px_s": 0.393,
+   "raw_std_px": 0.18,
+   "mask_center_std_px": 0.253,
+   "foot_std_px": 2.0,
+   "foot_path_px_s": 4.225,
+   "accel_rms_px": 0.0161,
+   "raw_accel_px": 0.1414,
+   "cursor_path_px_s": 1.64,
+   "cursor_drift_px": 15.4,
+   "drift_px_min": 0.937,
+   "excursion_px": 1.351,
+   "pose_std_rel": 0.0016,
+   "iou_mean": 0.9969,
+   "iou_p05": 0.9937,
+   "jump_frames": 0,
+   "ms_p50": 49.11,
+   "ms_p95": 68.35,
+   "object_px": 132.5
+  }
+ }
+}
