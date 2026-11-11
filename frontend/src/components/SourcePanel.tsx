@@ -49,7 +49,7 @@ export function SourcePanel() {
   const deskOn = spec?.kind === 'camera' && Boolean(spec.desk_view);
   const deskAvailable = cams.some((c) => c.is_desk_view);
   const enabled = spec?.kind === "camera" ? (spec.enabled ?? src?.enabled ?? true) : true;
-  const currentCam = cams.find((c) => c.unique_id === (spec?.kind === 'camera' ? spec.device_id : undefined)) ?? cams.find((c) => c.index === currentIndex);
+  const currentCam = cams.find((c) => c.unique_id === (spec?.kind === 'camera' ? spec.device_id : undefined)) ?? cams.find((c) => c.unique_id === src?.device_id) ?? cams.find((c) => c.index === currentIndex);
   const deskBlocked = !deskOn && !deskAvailable;
   const deviceName = currentCam?.name ?? src?.name ?? t('카메라', 'camera');
   const toggleDesk = async (enabled: boolean) => {
@@ -134,7 +134,8 @@ export function SourcePanel() {
       <ul className="cam-list">
         {cams.filter((c) => !c.is_desk_view).map((c) => {
           const best = c.formats.reduce((m, f) => Math.max(m, f.max_fps), 0);
-          const active = src?.device_id === c.unique_id || src?.parent_id === c.unique_id || currentIndex === c.index;
+          // 장치 ID를 알면 ID로만 판단한다 (자동 선택 때 번호가 다른 장치와 겹쳐 두 개가 함께 선택돼 보이던 문제)
+          const active = src?.device_id ? src.device_id === c.unique_id || src.parent_id === c.unique_id : currentIndex === c.index;
           return (
             <li key={c.unique_id}>
               <button

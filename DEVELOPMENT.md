@@ -39,8 +39,8 @@ curl -fL https://github.com/astral-sh/uv/releases/download/0.12.19/uv-aarch64-ap
 backend/.venv/bin/python packaging/build_bundle.py --uv-archive /tmp/anycontrol-uv.tar.gz
 ```
 
-현재 `releases/`에는 v1.8.0 빌드(2026-10-19, 실행파일 약 205MB)가 있습니다. 빌드 후 `cd releases && shasum -a 256 -c *.sha256` 로 확인합니다.
-`releases/` currently holds the v1.8.0 build (2026-10-19, launcher about 205 MB). Verify with `cd releases && shasum -a 256 -c *.sha256`.
+현재 `releases/`에는 v1.8.0 빌드(2026-10-20, 실행파일 약 213MB, 시연 영상 포함)가 있습니다. 빌드 후 `cd releases && shasum -a 256 -c *.sha256` 로 확인합니다.
+`releases/` currently holds the v1.8.0 build (2026-10-20, launcher about 213 MB, including the demo video). Verify with `cd releases && shasum -a 256 -c *.sha256`.
 
 `releases/`에 생성된 설치·삭제 `.command`와 두 `.sha256` 파일을 GitHub Release에 첨부합니다. 실행파일에는 모델·빌드된 화면·필수 외부 소스가 포함됩니다. 소스나 화면을 수정하면 반드시 재빌드하세요.
 Attach the launcher, uninstaller and both `.sha256` files from `releases/` to the GitHub Release. The launcher includes models, the built UI and required external code. Rebuild after changing source or UI.

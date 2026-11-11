@@ -19,13 +19,14 @@ export function liveActivity(prev: LiveState | null, next: LiveState): boolean {
   return (next.mapping?.live ?? []).some((l) => l.active && Math.abs((l.value ?? 0) - (pv.get(l.id) ?? 0)) > 0.05);
 }
 
-/** 창이 열린 채 120초 동안 입력이 전혀 없으면 화면을 어둡게 덮고 시연 영상을 튼다 (영상이 준비될 때까지는 안내 문구).
+/** 창이 열린 채 120초 동안 입력이 전혀 없으면 화면을 어둡게 덮고 시연 영상(public/showcase.mp4, 음소거 반복)을 튼다.
  * 마우스 움직임·클릭·키보드·휠, 카메라 입력 활동, 또는 카메라에 사람이 가까이 오면(Depth Anything, 배경 제외) 바로 닫힌다. */
 export function IdleShowcase() {
   const enabled = useApp((s) => s.idleShowcase);
   const idleMs = useApp((s) => s.idleSeconds) * 1000;
   const [show, setShow] = useState(false);
   const [resetErr, setResetErr] = useState("");
+  const [videoOk, setVideoOk] = useState(true);   // 영상 파일을 못 읽으면 글자 안내로 대신한다
   const wasShowing = useRef(false);
   const showing = useRef(show); showing.current = show;
   const wake = () => { const returning = showing.current; showing.current = false; lastInput.current = Date.now(); setShow(false); if (returning) queueMicrotask(() => showGuidePrompt(true)); };
@@ -67,7 +68,9 @@ export function IdleShowcase() {
   return (
     <div className="idle-showcase" role="dialog" aria-label={t("시연 영상", "Demo video")}>
       {resetErr && <p className="error" role="alert">{resetErr}</p>}
-      <div className="idle-placeholder">시연영상placeholder</div>
+      {videoOk ? <video className="idle-video" src={`${import.meta.env.BASE_URL}showcase.mp4`} autoPlay muted loop playsInline preload="auto"
+          aria-label={t("시연 영상 재생", "Demo video playing")} onError={() => setVideoOk(false)} />
+        : <div className="idle-placeholder">{t("시연 영상", "Demo video")}</div>}
       <p className="idle-hint">{t("마우스를 움직이거나 카메라 앞으로 다가오면 바로 체험할 수 있어요", "Move the mouse or step up to the camera to try it")}</p>
     </div>
   );

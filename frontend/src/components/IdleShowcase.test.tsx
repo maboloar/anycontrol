@@ -11,26 +11,26 @@ vi.mock("../api", () => ({ getPresence: vi.fn() }));
 beforeEach(() => { vi.useFakeTimers(); hideGuidePrompt(); vi.mocked(resetAllSettings).mockClear(); useApp.setState({ idleShowcase: true, idleSeconds: 120 }); vi.mocked(getPresence).mockResolvedValue({ ready: true, present: false }); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
-it("darkens with the placeholder after 120 s without input and closes on mouse movement", async () => {
+it("darkens with the demo video after 120 s without input and closes on mouse movement", async () => {
   render(<IdleShowcase />);
   await act(async () => { await vi.advanceTimersByTimeAsync(119_000); });
-  expect(screen.queryByText("시연영상placeholder")).toBeNull();
+  expect(screen.queryByLabelText("시연 영상 재생")).toBeNull();
   await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
-  expect(screen.getByText("시연영상placeholder")).toBeTruthy();
+  expect(screen.getByLabelText("시연 영상 재생")).toBeTruthy();
   expect(resetAllSettings).toHaveBeenCalledTimes(1);
   expect(getPresence).toHaveBeenCalledWith(true);                 // 뜬 순간의 장면을 배경으로
   await act(async () => { fireEvent.pointerMove(window); await Promise.resolve(); });
   expect(useGuidePrompt.getState()).toMatchObject({ visible: true, returning: true });
-  expect(screen.queryByText("시연영상placeholder")).toBeNull();
+  expect(screen.queryByLabelText("시연 영상 재생")).toBeNull();
 });
 
 it("closes when the camera sees a person come close", async () => {
   render(<IdleShowcase />);
   await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
-  expect(screen.getByText("시연영상placeholder")).toBeTruthy();
+  expect(screen.getByLabelText("시연 영상 재생")).toBeTruthy();
   vi.mocked(getPresence).mockResolvedValue({ ready: true, present: true, near: 0.3 });
   await act(async () => { await vi.advanceTimersByTimeAsync(800); });
-  expect(screen.queryByText("시연영상placeholder")).toBeNull();
+  expect(screen.queryByLabelText("시연 영상 재생")).toBeNull();
   expect(useGuidePrompt.getState().visible).toBe(true);
 });
 
@@ -38,7 +38,7 @@ it("never shows when turned off in advanced mode", async () => {
   useApp.setState({ idleShowcase: false });
   render(<IdleShowcase />);
   await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
-  expect(screen.queryByText("시연영상placeholder")).toBeNull();
+  expect(screen.queryByLabelText("시연 영상 재생")).toBeNull();
 });
 
 it("counts camera input (cursor movement, mapping values) as activity", () => {

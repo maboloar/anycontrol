@@ -975,12 +975,16 @@ svg.patch-cables { position: fixed; inset: 0; width: 100vw; height: 100vh; point
 .memory-grid figcaption input { margin: 0 0.25rem 0 0; vertical-align: middle; }
 .memory-actions { align-items: center; }
 
-/* ---- 60초 무입력 시연 화면 ---- */
-.idle-showcase { position: fixed; inset: 0; z-index: 200; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.2rem;
+/* ---- 무입력 시연 화면 ---- */
+.idle-showcase { position: fixed; inset: 0; z-index: 3000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.2rem;
   background: rgb(4 6 10 / 0.92); animation: idle-in 0.6s ease-out; }
 .idle-placeholder { display: grid; place-items: center; width: min(80vw, 1100px); aspect-ratio: 16 / 9; border: 2px dashed #4a5568; border-radius: 16px;
   color: #cfd8e3; font-size: clamp(1.4rem, 4vw, 3rem); font-weight: 700; letter-spacing: 0.04em; }
-.idle-hint { margin: 0; color: #9aa4b2; font-size: 1.1rem; }
+/* 영상(레터박스 제거본, 1920×962)이 화면을 거의 채우고 가장자리만 살짝 어둡게 */
+.idle-video { width: min(96vw, calc(94vh * 1920 / 962)); aspect-ratio: 1920 / 962; object-fit: contain; border-radius: 10px; background: #000; box-shadow: 0 0 40px #000c; }
+.idle-hint { position: absolute; left: 0; right: 0; bottom: .6vh; margin: 0; text-align: center; color: #d6dde8; font-size: clamp(.95rem, 2vh, 1.2rem); text-shadow: 0 1px 4px #000; pointer-events: none; animation: idle-hint-pulse 3.2s ease-in-out infinite; }
+@keyframes idle-hint-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .idle-hint { animation: none; } }
 @keyframes idle-in { from { opacity: 0; } }
 
 /* ---- 패널 끌어 옮기기 (제목 줄) ---- */
@@ -1254,5 +1258,18 @@ html.rainbow-mode .topbar.real-active .topbar-stop { background: #fff4f5 !import
 .guide-invite-x { display: inline-grid; place-items: center; flex-shrink: 0; margin-left: auto; padding: .1rem .3rem; min-width: 24px; min-height: 24px; line-height: 1; font-size: 1.2rem; font-weight: 400; border-radius: 4px; color: #cfbdeb; background: transparent; border: 0; box-shadow: none; }
 .guide-invite-x:hover { color: #fff; background: #ffffff12; }
 .demo-fullwidth { grid-column: 1 / -1; min-width: 0; width: 100%; }
-.demo-fullwidth > .demo-shell { width: 100% !important; max-width: 100%; margin: 0; }
+/* 기본 폭: 오른쪽 아래 호버링 카메라의 왼쪽까지 (카메라가 꺼지면 변수가 없어 전체 폭) */
+.demo-fullwidth > .demo-shell { width: calc(100% - var(--float-cam-space, 0px)) !important; max-width: 100%; min-width: min(100%, 520px); margin: 0; }
 .demo-fullwidth > .demo-shell > .resize-edge-right { display: none; }
+
+/* 게임 시작 화면: 자동 매핑 조작법 + 연결 경고 (캔버스 위) */
+.game-canvas-wrap { position: relative; }
+.game-guide { position: absolute; inset: 6% 8%; display: flex; flex-direction: column; justify-content: center; gap: .55rem; padding: 1rem 1.2rem;
+  background: #070b14e8; border: 1px solid var(--accent); border-radius: 12px; color: #edf5ff; overflow: auto; box-shadow: 0 10px 30px #0009; }
+.game-guide h3 { margin: 0; font-size: 1.25rem; }
+.game-guide h3 small { font-size: .75rem; font-weight: 400; color: var(--muted); margin-left: .4rem; }
+.game-guide ul { margin: 0; padding-left: 1.1rem; display: grid; gap: .3rem; font-size: 1rem; line-height: 1.45; }
+.game-guide-goal { margin: 0; color: #c9d6ea; font-size: .92rem; }
+.game-guide-warn { display: grid; gap: .35rem; padding: .7rem .8rem; border-radius: 10px; background: #3a1018; border: 1px solid #ff6b81; }
+.game-guide-warn b { color: #ffb3c0; }
+.game-guide-warn button, .game-guide-start { justify-self: start; align-self: flex-start; font-size: 1rem; padding: .5rem 1.1rem; }

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { dismissGuidePrompt, hideGuidePrompt } from "./guidePrompt";
 import { markTourSeen, tourSeen } from "./tutorial";
 import type {
   AutoCalibrationState,
@@ -33,6 +34,7 @@ function readDevMode(): boolean {
 }
 
 const IDLE_KEY = "anycontrol.idleShowcase";
+export const GUIDE_INVITE_KEY = "anycontrol.guideInvite";   // 전시용 '처음이신가요?' 문구 사용 (운영자 설정: 시연 초기화에도 유지)
 const FLOAT_KEY = "anycontrol.floatingCamera";
 function readFlag(key: string, fallback: boolean): boolean {
   try { const v = localStorage.getItem(key); return v === null ? fallback : v === "1"; } catch { return fallback; }
@@ -131,6 +133,8 @@ interface AppState {
   setDormant: (d: "replaced" | "restarted" | null) => void;
   idleShowcase: boolean;
   setIdleShowcase: (on: boolean) => void;
+  guideInvite: boolean;
+  setGuideInvite: (on: boolean) => void;
   /** 시연 화면까지 기다릴 무입력 시간 (초, 기본 120) */
   idleSeconds: number;
   setIdleSeconds: (s: number) => void;
@@ -231,6 +235,7 @@ export const useApp = create<AppState>((set) => ({
   tourOpen: !tourSeen(),
   setTour: (tourOpen) => {
     if (!tourOpen) markTourSeen();
+    dismissGuidePrompt();   // 튜토리얼을 한 번 열면 다음 시연 화면(초기화)까지 '처음이신가요?' 문구를 띄우지 않는다
     set({ tourOpen });
   },
   patchDrag: null,
@@ -239,6 +244,12 @@ export const useApp = create<AppState>((set) => ({
   setPatchConnect: (patchConnect) => set({ patchConnect }),
   dormant: null,
   setDormant: (dormant) => set({ dormant }),
+  guideInvite: readFlag(GUIDE_INVITE_KEY, true),
+  setGuideInvite: (guideInvite) => {
+    try { localStorage.setItem(GUIDE_INVITE_KEY, guideInvite ? "1" : "0"); } catch { /* 이번 세션만 */ }
+    if (!guideInvite) hideGuidePrompt();
+    set({ guideInvite });
+  },
   idleShowcase: readFlag(IDLE_KEY, true),
   setIdleShowcase: (idleShowcase) => {
     try { localStorage.setItem(IDLE_KEY, idleShowcase ? "1" : "0"); } catch { /* 이번 세션만 */ }

@@ -1,6 +1,6 @@
 import { resetSettings } from "./api";
 import { settleDraftForReset, replaceDraftAfterReset } from "./mappingDraft";
-import { useApp } from "./store";
+import { GUIDE_INVITE_KEY, useApp } from "./store";
 import { setLang } from "./i18n";
 let inFlight: Promise<void> | null = null;
 export function resetAllSettings(): Promise<void> {
@@ -11,12 +11,12 @@ export function resetAllSettings(): Promise<void> {
     await settleDraftForReset();
     const result = await resetSettings();
     // Saved profiles live on the server. Keep user-created jack definitions here.
-    try { Object.keys(localStorage).filter(k => k.startsWith("anycontrol.") && k !== "anycontrol.customJacks").forEach(k => localStorage.removeItem(k)); } catch { /* in-memory reset still works */ }
+    try { Object.keys(localStorage).filter(k => k.startsWith("anycontrol.") && k !== "anycontrol.customJacks" && k !== GUIDE_INVITE_KEY && k !== "anycontrol.idleSeconds").forEach(k => localStorage.removeItem(k)); } catch { /* in-memory reset still works */ }
     const current = useApp.getState();
     useApp.setState({ ...useApp.getInitialState(), conn: current.conn, serverVersion: current.serverVersion,
       telemetry: current.telemetry, client: current.client, frameSize: current.frameSize, previewMirror: current.previewMirror,
       dormant: current.dormant, patchConnect: current.patchConnect, resetBusy: true, resetGeneration: current.resetGeneration + 1,
-      devMode: false, idleShowcase: true, idleSeconds: 120, floatingCamera: true, tourOpen: false,
+      devMode: false, guideInvite: current.guideInvite, idleShowcase: true, idleSeconds: current.idleSeconds,   // 시연 대기 초는 운영자 설정이라 유지 floatingCamera: true, tourOpen: false,
       handInputEnabled: true, touchOverlay: false, mouseInfo: result.mouse, mappingInfo: result.mapping });
     replaceDraftAfterReset(result.mapping.profile);
     setLang("ko");

@@ -29,7 +29,7 @@ from .. import PROTOCOL_VERSION, __version__
 from ..capture import CameraSource, FrameSource, SyntheticSource, VideoFileSource
 from ..capture.avf import AVAILABLE as AVF_AVAILABLE
 from ..capture.avf import AVFCameraSource
-from ..capture.devices import CAMERA_PREFER, list_cameras, preferred_camera, select_camera
+from ..capture.devices import auto_candidate, list_cameras, preferred_camera, select_camera
 from ..config import Settings
 from ..engine import Engine
 from ..pipeline import VisionProcessor
@@ -204,7 +204,7 @@ def create_app(settings: Settings | None = None,
 
     async def camera_fallback_loop(stall_s: float = 4.0) -> None:
         """자동 선택(index -1)으로 연 카메라가 stall_s 초 넘게 프레임을 못 보내면(iPhone 잠김·멀어짐 등)
-        그 카메라를 건너뛰고 다음 순서(homese → 17sa → FaceTime HD Camera)로 바꾼다. 사용자가 소스를 고르면 건너뛰기 목록은 비운다."""
+        그 카메라를 건너뛰고 다음 순서(homese → 17sa → iPhone 연속성 카메라 → FaceTime HD Camera)로 바꾼다. 사용자가 소스를 고르면 건너뛰기 목록은 비운다."""
         bad_since: float | None = None
         while True:
             await asyncio.sleep(1.0)
@@ -226,7 +226,7 @@ def create_app(settings: Settings | None = None,
             except ValueError:
                 continue
             # 자동 연결과 동일한 우선순위 안에서 다음 카메라로 폴백한다.
-            if target["unique_id"] in exclude or not any(w in str(target.get("name", "")).lower() for w in CAMERA_PREFER):
+            if target["unique_id"] in exclude or not auto_candidate(target):
                 continue
             try:
                 nxt = await asyncio.to_thread(build_source, spec, exclude)

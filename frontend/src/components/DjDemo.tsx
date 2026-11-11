@@ -5,6 +5,7 @@ import { useMappingDraft } from "../mappingDraft";
 import { cables, connect, registerFns, type PatchFn } from "../patch";
 import { objectRef } from "../objectRefs";
 import { useApp } from "../store";
+import { isDjMapping } from "../gameMapping";
 import type { FrameState, ObjectInfo, Profile } from "../protocol";
 import { t } from "../i18n";
 import { ActionIcon } from "./ActionIcon";
@@ -30,7 +31,10 @@ export const DJ_FNS: PatchFn[] = [
 ];
 registerFns("dj", DJ_FNS);
 
-/** Explicit presets only; keep non-DJ mappings and legacy output names. */
+/** DJ 프리셋을 적용하면 지워질 DJ 외 연결 수 (매핑 패널의 키·게임·마우스·맨손 연결 등) */
+export const djPresetRemoves = (profile: Profile) => profile.mappings.filter(m => !isDjMapping(m)).length;
+
+/** Explicit presets only. 현재 프로필의 모든 연결(매핑 패널 포함)을 해제하고 DJ 프리셋만 연결한다. */
 export function djPreset(profile: Profile, objects: ObjectInfo[], mirror = false): Profile {
   const available = objects.filter(o => o.kind !== "pen").sort((a, b) => {
     const x = (o: ObjectInfo) => o.box ? (o.box[0] + o.box[2]) / 2 : o.id;
@@ -38,7 +42,7 @@ export function djPreset(profile: Profile, objects: ObjectInfo[], mirror = false
   });
   if (!available.length) throw new Error(t("일반 물체를 먼저 등록하세요.", "Register an object first."));
   const a = objectRef(available[0]!), b = objectRef(available[1] ?? available[0]!);
-  let next = { ...profile, mappings: profile.mappings.filter(m => m.output.target !== "control" || !m.output.name.startsWith("dj.")) };
+  let next: Profile = { ...profile, mappings: [] };
   const add = (ref: string, fn: string, axis?: "x" | "y" | "depth" | "angle", lift = false) => {
     next = connect(next, ref, fn);
     if (axis) {
@@ -61,6 +65,11 @@ export function DjDemo() {
   const objects = useApp(s => s.objects), conn = useApp(s => s.conn);
   const count = objects.filter(o => o.kind !== "pen").length;
   const [presetError, setPresetError] = useState("");
+  // 다른 연결이 지워질 때만 두 번 눌러 확인한다 (4초 뒤 또는 매핑이 바뀌면 취소)
+  const [armed, setArmed] = useState(false);
+  const removes = draft ? djPresetRemoves(draft) : 0;
+  useEffect(() => { setArmed(false); }, [removes]);
+  useEffect(() => { if (!armed) return; const id = window.setTimeout(() => setArmed(false), 4000); return () => window.clearTimeout(id); }, [armed]);
   const engine = useRef<DjEngine | null>(null);
   const [on, setOn] = useState(false);
   const [c, setC] = useState<DjControls>(DEFAULT_DJ);
@@ -164,11 +173,14 @@ export function DjDemo() {
       info={t(<>음원 없이 브라우저에서 만든 비트(덱 A)와 신스(덱 B)를 섞습니다. 화면의 버튼·노브·페이더를 직접 써도 되고(노브는 위아래로 끌기, 두 번 클릭 = 가운데), 위 <b>DJ 패치 베이</b>에서 물체 카드의 잭을 이으면 물체로 조작합니다: 좌우 = 크로스페이더, 기울기 = 필터, <b>손으로 물체를 터치</b> = 재생·에코·클랩·스크래치.</>,
         <>Mixes a browser-made beat (deck A) and synth (deck B). Use the on-screen buttons, knobs (drag up/down, double-click = center) and faders, or patch object jacks in the <b>DJ patch bay</b> above: sideways = crossfader, tilt = filter, <b>touch the object with a finger</b> = play, echo, clap, scratch.</>)}>
       <div className="game-mapping" data-tour="automap">
-        <button type="button" className="act-config" disabled={!draft || count === 0 || conn !== "open"} onClick={() => {
+        <button type="button" className={`act-config ${armed ? "danger armed" : ""}`} aria-live="polite" disabled={!draft || count === 0 || conn !== "open"} onBlur={() => setArmed(false)} onClick={() => {
+          if (removes > 0 && !armed) { setArmed(true); return; }
           try { edit(djPreset(draft!, objects, useApp.getState().inputMirror), true); setPresetError(""); }
           catch (e) { setPresetError(String(e instanceof Error ? e.message : e)); }
-        }}>{count >= 2 ? t("2개 물체 예시 · 자동 매핑", "2-object example · Auto-map") : t("1개 물체 예시 · 자동 매핑", "1-object example · Auto-map")}</button>
-        <p className="small muted">{count === 0 ? t("일반 물체를 등록하면 예시를 연결할 수 있습니다.", "Register an object to use the example.") : count >= 2 ? t("선택 순서: 영상 왼쪽부터 덱 A/B. 각 물체 터치 = 해당 덱 재생, 앞뒤 = 볼륨. A 좌우 = 믹스, A 기울기 = 템포, A 들기 = 클랩. B 기울기 = 필터, B 들기 = 에코. 3개 이상이면 앞의 2개를 씁니다.", "Left-to-right controllers are decks A/B. Touch each to play its deck, near/far for volume. A: sideways mix, tilt tempo, lift clap. B: tilt filter, lift echo. With 3+ objects, the first two are used.") : t("좌우 = 믹스, 앞뒤 = 두 덱 볼륨, 기울기 = 필터, 들기 = 클랩. 재생은 화면의 재생 버튼으로 하세요(터치 배정 없음). DJ 연결만 교체하며 다른 매핑은 유지합니다.", "Sideways mixes, near/far controls both volumes, tilt filters, lift triggers clap. Use the on-screen play buttons (no touch mapping). Only DJ connections are replaced.")}</p>
+          setArmed(false);
+        }}>{armed ? t(`다른 연결 ${removes}개가 해제됩니다 · 한 번 더 누르세요`, `${removes} other connection(s) will be removed · press again`)
+          : count >= 2 ? t("2개 물체 예시 · 자동 매핑", "2-object example · Auto-map") : t("1개 물체 예시 · 자동 매핑", "1-object example · Auto-map")}</button>
+        <p className="small muted">{count === 0 ? t("일반 물체를 등록하면 예시를 연결할 수 있습니다.", "Register an object to use the example.") : count >= 2 ? t("선택 순서: 영상 왼쪽부터 덱 A/B. 각 물체 터치 = 해당 덱 재생, 앞뒤 = 볼륨. A 좌우 = 믹스, A 기울기 = 템포, A 들기 = 클랩. B 기울기 = 필터, B 들기 = 에코. 3개 이상이면 앞의 2개를 씁니다.", "Left-to-right controllers are decks A/B. Touch each to play its deck, near/far for volume. A: sideways mix, tilt tempo, lift clap. B: tilt filter, lift echo. With 3+ objects, the first two are used.") : t("좌우 = 믹스, 앞뒤 = 두 덱 볼륨, 기울기 = 필터, 들기 = 클랩. 재생은 화면의 재생 버튼으로 하세요(터치 배정 없음).", "Sideways mixes, near/far controls both volumes, tilt filters, lift triggers clap. Use the on-screen play buttons (no touch mapping).")}{count > 0 && t(" 자동 매핑은 매핑 패널의 연결을 포함해 지금 연결을 모두 해제하고 DJ 연결만 남깁니다. 다른 연결이 있으면 두 번 눌러 확인해요.", " Auto-map removes all current connections, including those in the Mapping panel, and keeps only the DJ ones. If other connections exist, press twice to confirm.")}</p>
       </div>
       {(err || presetError) && <p className="error small" role="alert">{presetError || err}</p>}
       {draft && <PatchBay fns={DJ_FNS} title={t("DJ 패치 베이", "DJ patch bay")} draft={draft} edit={edit} />}

@@ -24,7 +24,7 @@ it("waits for an in-flight mapping save, clears current settings, and preserves 
   expect(resetSettings).toHaveBeenCalledTimes(1);
   expect(putMapping).toHaveBeenCalledTimes(1);
   expect(useDraftStore.getState().draft?.name).toBe("default");
-  expect(useApp.getState()).toMatchObject({ conn: "open", idleSeconds: 120, devMode: false, resetBusy: false, objects: [] });
+  expect(useApp.getState()).toMatchObject({ conn: "open", idleSeconds: 10, devMode: false, resetBusy: false, objects: [] });
   expect(localStorage.getItem("anycontrol.customJacks")).toBe("keep");
   expect(localStorage.getItem("anycontrol.panel.abc.size")).toBeNull();
   expect(layout).toHaveBeenCalledOnce(); expect(resize).toHaveBeenCalledOnce();

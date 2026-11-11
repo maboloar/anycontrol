@@ -24,6 +24,7 @@ export function useGameSession<T extends { score: number; over: boolean }>(key: 
   const conn = useApp(s => s.conn);
   const checkRef = useRef(check); checkRef.current = check;
   const [warning, setWarning] = useState("");
+  const [fresh, setFresh] = useState(true);   // 아직 한 번도 시작하지 않음 → 시작 화면에 조작법 안내
   const padRef = useRef(ZERO);
   const frameRef = useRef<FrameState | null>(null);
   const padTime = useRef(-Infinity);
@@ -55,7 +56,7 @@ export function useGameSession<T extends { score: number; over: boolean }>(key: 
   const play = (restart = false) => {
     const problem = checkRef.current?.();
     if (problem) { setWarning(problem); return; }
-    setWarning("");
+    setWarning(""); setFresh(false);
     if (restart || game.current.over) { game.current = create(); setSnapshot(game.current); }
     keys.current.clear(); pausedRef.current = false; setPaused(false); root.current?.focus();
   };
@@ -116,7 +117,7 @@ export function useGameSession<T extends { score: number; over: boolean }>(key: 
     return padRef.current.axes[axis] ?? 0;
   };
   const frame = () => frameRef.current;
-  return { warning, demoControl, objectsInput, frame, root, canvas, game, snapshot, paused, pausedRef, padRef, inputActive, best, keys, pause, play, publish, control, handlers };
+  return { warning, clearWarning: () => setWarning(""), fresh, demoControl, objectsInput, frame, root, canvas, game, snapshot, paused, pausedRef, padRef, inputActive, best, keys, pause, play, publish, control, handlers };
 }
 
 /** 정지 중에는 한 번만 그린다. 패널 숨김·게임 종료도 프레임 예약을 끝낸다. */

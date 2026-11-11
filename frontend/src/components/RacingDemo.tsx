@@ -74,7 +74,10 @@ export function RacingDemo() {
           <span>{t('카메라 물체', 'Objects seen')} <b>{visible}</b></span>
         </>}
       </div>
-      <canvas ref={s.canvas} width={640} height={400} className="drawpad game-canvas" role="img" aria-label={t("코인과 장애물이 있는 레이싱 화면", "Racing screen with coins and obstacles")} />
+      <div className="game-canvas-wrap">
+        <canvas ref={s.canvas} width={640} height={400} className="drawpad game-canvas" role="img" aria-label={t("코인과 장애물이 있는 레이싱 화면", "Racing screen with coins and obstacles")} />
+        {setup.guide(s, g.over)}
+      </div>
 
       <p className="small muted">{t("코인 100점(연속이면 최대 ×5) · 코인 5개 = 니트로 · 초록 화살표 = 부스터 · 차선을 바꾸는 차와 기름(빙글 미끄러짐)을 피하세요 · 600m마다 스테이지(낮→노을→밤→폭풍)가 바뀌며 빨라집니다. W/↑ 가속 · S/↓ 브레이크 · Space 일시정지.", "Coins 100 pts (streaks up to ×5) · 5 coins = nitro · green arrows = boost · dodge lane-changing cars and oil (spin-out) · every 600 m the stage changes (day → sunset → night → storm) and gets faster. W/↑ gas · S/↓ brake · Space pause.")}</p>
     </div>

@@ -181,4 +181,10 @@ def test_auto_select_prefers_homese_then_17sa_then_facetime_and_skips_stalled() 
     assert preferred_camera(cams)['unique_id'] == 'hs'
     assert preferred_camera(cams, ('hs',))['unique_id'] == '17'
     assert preferred_camera(cams, ('hs', '17'))['unique_id'] == 'ft'
-    assert preferred_camera(cams[1:2])['unique_id'] == '17'              # 둘 다 없으면 연속성 카메라
+    assert preferred_camera(cams[1:2])['unique_id'] == '17'
+    # homese·17sa 가 없는 다른 사람의 Mac: 연결된 iPhone(연속성 카메라)이 내장 FaceTime 보다 먼저
+    other = [dict(index=0, unique_id='ft', name='FaceTime HD Camera', is_continuity=False),
+             dict(index=1, unique_id='ip', name="Kim's iPhone Camera", is_continuity=True)]
+    assert preferred_camera(other)['unique_id'] == 'ip'
+    assert preferred_camera(other, ('ip',))['unique_id'] == 'ft'
+    assert preferred_camera(other[:1])['unique_id'] == 'ft'

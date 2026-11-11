@@ -106,3 +106,15 @@ it('does not show a separate automatic-camera button', async () => {
   expect(screen.queryByRole('button', { name: /자동 선택/ })).toBeNull();
   expect(screen.queryByText(/기본 카메라: homese/)).toBeNull();
 });
+
+it('marks only the camera actually in use, even when another camera has the same index', async () => {
+  const homese = { ...phone, index: 0, unique_id: 'hs', name: 'homese', companion_id: null };
+  const sa = { ...phone, index: 1, unique_id: '17', name: '17sa', companion_id: null };
+  vi.mocked(getCameras).mockResolvedValue([homese, sa]);
+  vi.mocked(getSource).mockResolvedValue({ spec: { ...normal, index: -1, device_id: null } as never });
+  useApp.setState({ telemetry: { source: { kind: 'camera', index: 1, device_id: 'hs', name: 'homese' } } as never });
+  render(<SourcePanel />);
+  await waitFor(() => expect(screen.getByRole('button', { name: /homese/ })).toBeTruthy());
+  expect(screen.getByRole('button', { name: /homese/ }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByRole('button', { name: /17sa/ }).getAttribute('aria-pressed')).toBe('false');
+});

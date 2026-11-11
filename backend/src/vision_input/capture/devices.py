@@ -47,6 +47,7 @@ def list_cameras() -> list[dict[str, Any]]:
         dtype, uid = str(d.deviceType()), str(d.uniqueID())
         desk = 'DeskView' in dtype
         continuity = bool(d.isContinuityCamera()) if hasattr(d, 'isContinuityCamera') else 'Continuity' in dtype
+        continuity = continuity or 'iphone' in str(d.localizedName()).lower()   # 일부 macOS 에서 외장 장치로만 보고될 때
         best = {}
         try:
             for f in d.formats():
@@ -65,19 +66,30 @@ def list_cameras() -> list[dict[str, Any]]:
     return out
 
 
-# 자동 선택 순서: homese → 17sa → FaceTime HD Camera.
-# 바꾸려면 ANYCONTROL_CAMERA_PREFER="이름1,이름2". 맞는 게 없으면 연속성 카메라 → 첫 카메라.
-CAMERA_PREFER = tuple(w.strip().lower() for w in os.environ.get('ANYCONTROL_CAMERA_PREFER', 'homese,17sa,facetime hd camera').split(',') if w.strip())
+# 자동 선택 순서: homese → 17sa → iPhone 연속성 카메라 → FaceTime HD Camera → 첫 카메라.
+# (프로그램을 받아 쓰는 다른 사람에게는 homese·17sa 가 없으니 연결된 iPhone 을 가장 먼저 쓴다)
+# 앞의 이름 목록은 ANYCONTROL_CAMERA_PREFER="이름1,이름2" 로 바꿀 수 있다.
+CAMERA_PREFER = tuple(w.strip().lower() for w in os.environ.get('ANYCONTROL_CAMERA_PREFER', 'homese,17sa').split(',') if w.strip())
+CAMERA_FALLBACK = ('facetime hd camera',)
+
+
+def auto_candidate(c: dict[str, Any]) -> bool:
+    """자동 선택·폴백 순서에 드는 카메라인가 (이름 목록, 연속성 카메라, 내장 FaceTime)."""
+    name = str(c.get('name', '')).lower()
+    return bool(c.get('is_continuity')) or any(w in name for w in (*CAMERA_PREFER, *CAMERA_FALLBACK))
 
 
 def preferred_camera(normal: list[dict[str, Any]], exclude: tuple[str, ...] = ()) -> dict[str, Any] | None:
     """exclude: 프레임이 오지 않아 건너뛸 카메라 unique_id (실행 중 폴백)."""
     normal = [c for c in normal if c.get('unique_id') not in exclude] or normal
-    for word in CAMERA_PREFER:
-        hit = next((c for c in normal if word in str(c.get('name', '')).lower()), None)
-        if hit is not None:
-            return hit
-    return next((c for c in normal if c.get('is_continuity')), normal[0] if normal else None)
+    def named(words: tuple[str, ...]) -> dict[str, Any] | None:
+        for word in words:
+            hit = next((c for c in normal if word in str(c.get('name', '')).lower()), None)
+            if hit is not None:
+                return hit
+        return None
+    return (named(CAMERA_PREFER) or next((c for c in normal if c.get('is_continuity')), None)
+            or named(CAMERA_FALLBACK) or (normal[0] if normal else None))
 
 
 def select_camera(cameras: list[dict[str, Any]], index: int = -1,

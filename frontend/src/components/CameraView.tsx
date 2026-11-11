@@ -34,6 +34,16 @@ export function CameraView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const floatingRef = useRef<HTMLCanvasElement>(null);
+  // 데모 패널 기본 폭이 오른쪽 아래 호버링 카메라와 겹치지 않도록 카메라 폭(+여백)을 CSS 변수로 알린다
+  const floatObs = useRef<ResizeObserver | null>(null);
+  const floatSpaceRef = (el: HTMLDivElement | null) => {
+    floatObs.current?.disconnect(); floatObs.current = null;
+    const root = document.documentElement.style;
+    if (!el) { root.removeProperty("--float-cam-space"); return; }
+    const update = () => root.setProperty("--float-cam-space", `${Math.round(el.getBoundingClientRect().width) + 32}px`);
+    update();
+    if (typeof ResizeObserver !== "undefined") { floatObs.current = new ResizeObserver(update); floatObs.current.observe(el); }
+  };
   const floatingResize = useResizable('anycontrol.floating-camera.size', { floating: true });
   const floatingDrag = useFloatingDrag();
   const [floating, setFloating] = useState(false);
@@ -402,7 +412,7 @@ export function CameraView() {
       </div>
     </div>
     </Panel>
-    {floating && floatingOn && <div className={`floating-camera ${floatingMinimized ? "minimized" : ""}`} aria-label={t("고정 카메라 미리보기", "Pinned camera preview")} style={{ ...floatingResize.style, ...floatingDrag.style, ...(floatingMinimized ? { height: undefined } : {}) }}>
+    {floating && floatingOn && <div ref={floatSpaceRef} className={`floating-camera ${floatingMinimized ? "minimized" : ""}`} aria-label={t("고정 카메라 미리보기", "Pinned camera preview")} style={{ ...floatingResize.style, ...floatingDrag.style, ...(floatingMinimized ? { height: undefined } : {}) }}>
       <div className="floating-header" {...floatingDrag.handlers} title={t("끌어서 옮기기 · 두 번 클릭하면 오른쪽 아래로", "Drag to move · Double-click to return to the bottom right")}>
         <span>⠿ {t("실시간 카메라", "Live camera")}{paused ? t(" · 일시정지", " · Paused") : ""}</span>
         <button type="button" className="minimize" aria-label={t(`실시간 카메라 ${floatingMinimized ? "펼치기" : "최소화"}`, `${floatingMinimized ? "Expand" : "Collapse"} live camera`)}

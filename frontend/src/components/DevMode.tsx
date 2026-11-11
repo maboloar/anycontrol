@@ -21,6 +21,19 @@ export function DevBadge() {
 }
 
 /** 고급 모드: 120초 무입력 시연 화면 켜기·끄기 (발표 중에는 끄면 화면이 어두워지지 않는다) */
+/** 고급 모드: 전시용 '처음이신가요?' 안내 문구를 쓸지 고른다 (꺼 두면 상단바 문구가 뜨지 않는다) */
+export function GuideInviteToggle() {
+  const devMode = useApp((s) => s.devMode);
+  const on = useApp((s) => s.guideInvite);
+  if (!devMode) return null;
+  return (
+    <label className="check small dev-check" title={t("입력이 없을 때 상단바에 '처음이신가요?' 안내 문구를 띄웁니다 (전시용)", "Show the 'First time?' hint in the top bar when idle (for exhibitions)")}>
+      <input type="checkbox" checked={on} onChange={(e) => useApp.getState().setGuideInvite(e.target.checked)} />
+      {t("안내 문구", "Guide hint")}
+    </label>
+  );
+}
+
 export function IdleShowcaseToggle() {
   const devMode = useApp((s) => s.devMode);
   const on = useApp((s) => s.idleShowcase);

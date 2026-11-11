@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { RacingDemo } from './RacingDemo';
 import { SurvivalDemo } from './SurvivalDemo';
 import { PongDemo } from './PongDemo';
@@ -139,7 +139,7 @@ it('only creates racing cables on Auto-map and applies the selected steering sty
   render(<RacingDemo />);
   expect(useDraftStore.getState().draft!.mappings).toHaveLength(0);
   fireEvent.change(screen.getByLabelText('자동 매핑 조작법'), { target: { value: 'angle' } });
-  fireEvent.click(screen.getByRole('button', { name: '자동 매핑' }));
+  fireEvent.click(screen.getAllByRole('button', { name: '자동 매핑' })[0]!);
   await waitFor(() => expect(useDraftStore.getState().draft!.mappings).toHaveLength(3));
   expect(useDraftStore.getState().draft!.mappings[0]!.input).toMatchObject({ source: 'object', object: '#1', axis: 'angle' });
   fireEvent.click(screen.getByRole('button', { name: '주행 시작 / 계속' }));
@@ -200,4 +200,22 @@ it('exposes hockey AI difficulty only for single player and preserves selection 
   expect((screen.getByLabelText('AI 난이도') as HTMLSelectElement).value).toBe('easy');
   fireEvent.click(screen.getByRole('radio', { name: '2인 대결' }));
   expect(screen.queryByLabelText('AI 난이도')).toBeNull();
+});
+
+it('shows the auto-map controls on the start screen and warns before starting without a connection', async () => {
+  useDraftStore.getState().set({ version: 1, name: 'empty', description: '', mappings: [] });
+  useApp.setState({ conn: 'open' });
+  render(<RacingDemo />);
+  const guide = screen.getByRole('dialog', { name: '게임 시작 안내' });
+  expect(guide.textContent).toContain('좌우로 움직여 조향');
+  expect(guide.textContent).toContain('아직 게임에 연결된 컨트롤러가 없어요');
+  fireEvent.click(screen.getByRole('button', { name: '주행 시작 / 계속' }));   // 연결 없이 시작 → 시작하지 않고 경고
+  expect(screen.queryByRole('button', { name: '일시정지 (Space)' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('자동 매핑 조작법'), { target: { value: 'angle' } });
+  expect(screen.getByRole('dialog', { name: '게임 시작 안내' }).textContent).toContain('기울여 조향');
+  fireEvent.click(within(screen.getByRole('dialog', { name: '게임 시작 안내' })).getByRole('button', { name: '자동 매핑' }));
+  await waitFor(() => expect(useDraftStore.getState().draft!.mappings).toHaveLength(3));
+  fireEvent.click(screen.getByRole('button', { name: '시작 (Space)' }));
+  expect(screen.getByRole('button', { name: '일시정지 (Space)' })).toBeTruthy();
+  expect(screen.queryByRole('dialog', { name: '게임 시작 안내' })).toBeNull();
 });

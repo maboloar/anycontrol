@@ -7,11 +7,12 @@ import { useApp } from "../store";
 import { ActionIcon } from "./ActionIcon";
 import { HeaderBuddy } from "./CameraBuddy";
 import { DisplayControls } from "./DisplayControls";
-import { DevBadge, DevModeToggle, FloatingCameraToggle, IdleShowcaseToggle } from "./DevMode";
+import { DevBadge, DevModeToggle, FloatingCameraToggle, GuideInviteToggle, IdleShowcaseToggle } from "./DevMode";
 
 export function Topbar() {
   useRealStatus();
-  const prompt = useGuidePrompt(s => s.visible);
+  const invite = useApp(s => s.guideInvite);
+  const prompt = useGuidePrompt(s => s.visible) && invite;
   const advanced = useApp(s => s.devMode);
   useEffect(() => {
     let last = Date.now();
@@ -25,7 +26,7 @@ export function Topbar() {
     };
     const events = ["pointermove", "pointerdown", "keydown", "wheel", "touchstart"] as const;
     events.forEach(e => window.addEventListener(e, activity, { passive: true }));
-    const timer = window.setInterval(() => { if (document.visibilityState === "visible" && Date.now() - last >= GUIDE_IDLE_MS && !useApp.getState().tourOpen) showGuidePrompt(); }, 500);
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible" && Date.now() - last >= GUIDE_IDLE_MS && !useApp.getState().tourOpen && useApp.getState().guideInvite) showGuidePrompt(); }, 500);
     return () => {
       events.forEach(e => window.removeEventListener(e, activity));
       window.clearInterval(timer);
@@ -54,7 +55,7 @@ export function Topbar() {
   return <header ref={ref} className={`topbar ${prompt ? "guide-invite" : ""} ${active ? `real-active ${state}` : ""}`}>
     <div className="topbar-brand">
       <div className="topbar-title"><h1 className="brand"><HeaderBuddy />AnyControl</h1>{advanced && <small className="topbar-meta"><DevBadge />{version && <span className="topbar-version">backend v{version}</span>}</small>}</div>
-      <button type="button" className="help-btn" data-tour="help" title={t("시작 안내를 다시 봅니다", "Show the getting-started tour again")} onClick={() => { hideGuidePrompt(); useApp.getState().setTour(true); }}>? {t("안내", "Guide")}</button>
+      <button type="button" className="help-btn" data-tour="help" title={t("시작 안내를 다시 봅니다", "Show the getting-started tour again")} onClick={() => useApp.getState().setTour(true)}>? {t("안내", "Guide")}</button>
       {prompt && <span className="guide-invite-text" role="status">
         <span>{t("← 처음이신가요? 안내 버튼을 눌러 시작해 보세요", "← First time? Press Guide to get started")}</span>
         <button type="button" className="guide-invite-x" aria-label={t("안내 문구 닫기", "Close this hint")} title={t("닫기 (다음 시연 화면까지 다시 뜨지 않아요)", "Close (stays hidden until the next demo screen)")} onClick={dismissGuidePrompt}>×</button>
@@ -68,7 +69,7 @@ export function Topbar() {
     <div className="topbar-controls">
       <DisplayControls />
 
-      <IdleShowcaseToggle /><FloatingCameraToggle /><DevModeToggle />
+      <IdleShowcaseToggle /><GuideInviteToggle /><FloatingCameraToggle /><DevModeToggle />
     </div>
   </header>;
 }

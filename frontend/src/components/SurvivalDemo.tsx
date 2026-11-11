@@ -32,7 +32,10 @@ export function SurvivalDemo() {
         <span>{t('웨이브', 'Wave')} <b>{g.wave}/{WAVES}</b></span><span>{t('처치', 'Kills')} <b>{g.kills}</b></span>
         <span>{t('무기', 'Weapon')} <b>{t(WEAPON[g.power]!, WEAPON_EN[g.power]!)}</b></span>
       </div>
-      <canvas ref={s.canvas} width={SW} height={SH} className="drawpad game-canvas" role="img" aria-label={t("좀비와 아이템이 있는 탑다운 게임 화면", "Top-down game screen with zombies and items")} />
+      <div className="game-canvas-wrap">
+        <canvas ref={s.canvas} width={SW} height={SH} className="drawpad game-canvas" role="img" aria-label={t("좀비와 아이템이 있는 탑다운 게임 화면", "Top-down game screen with zombies and items")} />
+        {setup.guide(s, g.over)}
+      </div>
 
     </div>
   </Panel>;

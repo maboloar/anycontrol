@@ -46,7 +46,10 @@ export function FruitDemo() {
         <span>{t('생명', 'Lives')} <b>{'♥'.repeat(Math.max(0, g.lives)) || '0'}</b></span><span>{t('콤보', 'Combo')} <b>{g.combo} (×{multiplier(g)})</b></span>
         <span>{t('손잡이', 'Handles')} <b>{n}/2</b></span>
       </div>
-      <canvas ref={s.canvas} width={FW} height={FH} className="drawpad game-canvas" role="img" aria-label={t("떨어지는 과일과 그물", "Falling fruit and a net")} />
+      <div className="game-canvas-wrap">
+        <canvas ref={s.canvas} width={FW} height={FH} className="drawpad game-canvas" role="img" aria-label={t("떨어지는 과일과 그물", "Falling fruit and a net")} />
+        {setup.guide(s, g.over)}
+      </div>
 
     </div>
   </Panel>;

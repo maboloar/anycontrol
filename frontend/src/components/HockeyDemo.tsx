@@ -32,7 +32,10 @@ export function HockeyDemo() {
       {mode === "pc" && <label className="hockey-difficulty">{t("AI 난이도", "AI difficulty")} <select aria-label={t("AI 난이도", "AI difficulty")} value={difficulty} onChange={e => { const d = e.target.value as HockeyDifficulty; setDifficulty(d); difficultyRef.current = d; s.game.current = { ...s.game.current, difficulty: d }; s.publish(); }}><option value="easy">{t("쉬움", "Easy")}</option><option value="normal">{t("보통", "Normal")}</option><option value="hard">{t("어려움", "Hard")}</option></select></label>}
       {setup.bar(<GameButtons s={s} over={g.over} status={g.over ? t(`${g.winner === 0 ? "1P" : mode === "pc" ? "컴퓨터" : "2P"} 승리!`, `${g.winner === 0 ? "P1" : mode === "pc" ? "Computer" : "P2"} wins!`) : s.paused ? t("준비 / 일시정지", "Ready / Paused") : t(`${HOCKEY_WIN}골 먼저 · 자기 진영에서 퍽을 밀어 주세요`, `First to ${HOCKEY_WIN} · strike from your half`)} />)}
       <div className="game-hud"><span>1P <b>{g.points[0]}</b></span><span>{mode === "pc" ? t("컴퓨터", "Computer") : "2P"} <b>{g.points[1]}</b></span><span>{t("타격", "Hits")} <b>{g.hits}</b></span><span>{t("최고", "Best")} <b>{s.best}</b></span></div>
-      <canvas ref={s.canvas} width={HW} height={HH} className="drawpad game-canvas" role="img" aria-label={t("에어 하키 테이블", "Air hockey table")} />
+      <div className="game-canvas-wrap">
+        <canvas ref={s.canvas} width={HW} height={HH} className="drawpad game-canvas" role="img" aria-label={t("에어 하키 테이블", "Air hockey table")} />
+        {setup.guide(s, g.over)}
+      </div>
 
     </div>
   </Panel>;

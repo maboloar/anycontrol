@@ -1,4 +1,4 @@
-import { hideGuidePrompt, useGuidePrompt } from "../guidePrompt";
+import { allowGuidePrompt, hideGuidePrompt, showGuidePrompt, useGuidePrompt } from "../guidePrompt";
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Topbar } from './Topbar';
@@ -88,4 +88,26 @@ it('hides backend version in basic mode and shows it below the title only in adv
   const version = screen.getByText('backend v1.8.0');
   const meta = container.querySelector('.topbar-title .brand + .topbar-meta');
   expect(meta?.contains(version)).toBe(true); expect(meta?.firstElementChild?.className).toContain('dev-badge');   // 고급 모드 배지 → backend 버전
+});
+
+it('opening the tutorial once keeps the guide hint hidden until the next demo reset', () => {
+  act(() => { allowGuidePrompt(); useApp.getState().setGuideInvite(true); });
+  render(<Topbar />);
+  fireEvent.click(screen.getByRole('button', { name: /안내/ }));
+  expect(useGuidePrompt.getState().dismissed).toBe(true);
+  act(() => { useApp.getState().setTour(false); showGuidePrompt(); });
+  expect(screen.queryByText(/처음이신가요/)).toBeNull();   // 숨김 상태에서는 다시 띄우려 해도 뜨지 않는다
+  act(() => { allowGuidePrompt(); showGuidePrompt(); });     // 시연 화면 초기화 뒤에는 다시 뜬다
+  expect(screen.getByText(/처음이신가요/)).toBeTruthy();
+});
+
+it('the advanced-mode Guide hint toggle turns the exhibition hint off', () => {
+  act(() => { allowGuidePrompt(); useApp.getState().setGuideInvite(true); useApp.setState({ devMode: true }); });
+  render(<Topbar />);
+  act(() => showGuidePrompt());
+  expect(screen.getByText(/처음이신가요/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('checkbox', { name: /안내 문구/ }));
+  expect(useApp.getState().guideInvite).toBe(false);
+  expect(screen.queryByText(/처음이신가요/)).toBeNull();
+  act(() => { useApp.getState().setGuideInvite(true); useApp.setState({ devMode: false }); });
 });

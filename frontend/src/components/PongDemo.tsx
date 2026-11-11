@@ -46,7 +46,10 @@ export function PongDemo() {
         <span>{t('왼쪽', 'Left')} <b>{g.scoreL}</b></span><span>{mode === 'pc' ? t('컴퓨터', 'Computer') : t('오른쪽', 'Right')} <b>{g.scoreR}</b></span>
         <span>{t('랠리', 'Rally')} <b>{g.rally}</b></span><span>{t('최고 점수', 'Best')} <b>{s.best}</b></span><span>{t('카메라 물체', 'Objects seen')} <b>{seen.current}</b></span>
       </div>
-      <canvas ref={s.canvas} width={W} height={H} className="drawpad game-canvas" role="img" aria-label={t("퐁 경기 화면", "Pong court")} />
+      <div className="game-canvas-wrap">
+        <canvas ref={s.canvas} width={W} height={H} className="drawpad game-canvas" role="img" aria-label={t("퐁 경기 화면", "Pong court")} />
+        {setup.guide(s, g.over)}
+      </div>
 
     </div>
   </Panel>;
