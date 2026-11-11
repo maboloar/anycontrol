@@ -14,7 +14,7 @@
 
 https://github.com/user-attachments/assets/f8b2e24b-a559-4912-911b-1b6cae45aa1e
 
-## [📑 발표 자료 보기](https://htmlpreview.github.io/?https://github.com/maboloar/anycontrol/blob/main/introduction/AnyControl_%EB%B0%9C%ED%91%9C%EC%9E%90%EB%A3%8C_%EB%B3%B8%EC%84%A0.html)
+### [발표 자료 보기](https://htmlpreview.github.io/?https://github.com/maboloar/anycontrol/blob/main/introduction/AnyControl_%EB%B0%9C%ED%91%9C%EC%9E%90%EB%A3%8C_%EB%B3%B8%EC%84%A0.html)
 
 </div>
 
