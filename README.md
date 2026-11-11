@@ -6,15 +6,13 @@
 
 **카메라 한 대로 만드는 입력장치 — 물체도, 펜도, 맨손도 마우스·키보드·게임패드가 됩니다.**
 
-[![Version](https://img.shields.io/badge/version-1.8.0-blue)](https://github.com/maboloar/anycontrol/releases)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Apple%20Silicon-lightgrey)
 ![Runs](https://img.shields.io/badge/runs-on--device%20%C2%B7%20offline-success)
 
 2026 고려대학교 × AWS AI INNOVATORS CHALLENGE 출품작
 
-[![AnyControl 데모 영상](docs/media/poster.jpg)](docs/media/demo.mp4)
-
-▶ 이미지를 누르면 전체 데모 영상(1분 7초)이 재생됩니다.
+https://github.com/user-attachments/assets/f8b2e24b-a559-4912-911b-1b6cae45aa1e
 
 </div>
 
