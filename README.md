@@ -132,7 +132,7 @@ AnyControl은 **카메라로 물체와 손의 움직임을 추적해 컴퓨터 �
 | **다중 물체** | **DJ 셋** |
 | ![다중 물체 화면](docs/media/shot-multi.jpg) | ![DJ 화면](docs/media/shot-dj.jpg) |
 
-서비스 소개서는 [`introduction/`](introduction/)에서 볼 수 있습니다.
+발표 자료(HTML)는 [`introduction/`](introduction/)에서 볼 수 있습니다.
 
 ## 다운로드 및 설치
 

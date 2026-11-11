@@ -6,15 +6,13 @@
 
 **An input device built from a single camera — objects, pens and bare hands become a mouse, a keyboard and a gamepad.**
 
-[![Version](https://img.shields.io/badge/version-1.8.0-blue)](https://github.com/maboloar/anycontrol/releases)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%7C%20Apple%20Silicon-lightgrey)
 ![Runs](https://img.shields.io/badge/runs-on--device%20%C2%B7%20offline-success)
 
 Entry for the 2026 Korea University × AWS AI INNOVATORS CHALLENGE
 
-[![AnyControl demo video](docs/media/poster.jpg)](docs/media/demo.mp4)
-
-▶ Click the image to play the full demo video (1 min 7 s).
+https://github.com/user-attachments/assets/f8b2e24b-a559-4912-911b-1b6cae45aa1e
 
 </div>
 
@@ -134,7 +132,7 @@ Press **Auto-map** to create the DJ connections. With 1 object: sideways = mix, 
 | **Multiple objects** | **DJ set** |
 | ![Multiple objects screen](docs/media/shot-multi.jpg) | ![DJ screen](docs/media/shot-dj.jpg) |
 
-The service brochure is in [`introduction/`](introduction/) (Korean).
+The presentation (HTML, Korean) is in [`introduction/`](introduction/).
 
 ## Download and install
 
